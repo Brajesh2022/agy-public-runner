@@ -14,8 +14,8 @@ permissions:
   issues: write
 
 env:
-  DEV_MODE: "false"
-  DELETE_LOGS: "true"
+  DEV_MODE: "true"
+  DELETE_LOGS: "false"
 
 jobs:
   delete-logs:
