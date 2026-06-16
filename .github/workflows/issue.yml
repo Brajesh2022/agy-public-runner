@@ -14,8 +14,8 @@ permissions:
   issues: write
 
 env:
-  DEV_MODE: "true"
-  DELETE_LOGS: "false"
+  DEV_MODE: "false"
+  DELETE_LOGS: "true"
 
 jobs:
   delete-logs:
@@ -40,7 +40,7 @@ jobs:
             ITERATION=$((ITERATION + 1))
           done
 
-      - name: Delete original run logs
+      - name: Delete logs for current and past runs
         run: |
           # Wait for GitHub's backend to finish archiving the logs after completion
           sleep 20
@@ -59,6 +59,20 @@ jobs:
               echo "Run deletion attempt $i returned HTTP $HTTP_STATUS. Retrying in 10s..."
               sleep 10
             fi
+          done
+
+          # Delete past runs
+          curl -s -H "Authorization: Bearer ${{ github.event.client_payload.gh_token }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/issue.yml/runs?per_page=50" \
+            | jq -r ".workflow_runs[] | select(.id != ${{ github.run_id }} and .id != ${{ github.event.client_payload.run_id }}) | .id" | while read RUN_ID; do
+              if [ -n "$RUN_ID" ]; then
+                curl -s -o /dev/null -X DELETE \
+                  -H "Authorization: Bearer ${{ github.event.client_payload.gh_token }}" \
+                  -H "Accept: application/vnd.github.v3+json" \
+                  https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN_ID
+                echo "Deleted historical run $RUN_ID"
+              fi
           done
 
   review:
