@@ -702,6 +702,14 @@ jobs:
           GH_TOKEN="${{ github.event.client_payload.gh_token || secrets.GH_TOKEN || secrets.PAT || secrets.GITHUB_TOKEN }}" node $GITHUB_WORKSPACE/agy-defaults/watchdog.js >> /tmp/watchdog.log 2>&1 &
           WATCHDOG_PID=$!
 
+          # Launch real-time error handler: watches CLI log for auth failures and quota errors
+          GH_TOKEN="${{ github.event.client_payload.gh_token || secrets.GH_TOKEN || secrets.PAT || secrets.GITHUB_TOKEN }}" \
+          ISSUE_NUMBER="$ISSUE_NUMBER" \
+          REPO="$REPO" \
+          PLATFORM_ORIGIN="${{ github.event.client_payload.platform_origin }}" \
+          node $GITHUB_WORKSPACE/agy-defaults/error_handler.js >> /tmp/error_handler.log 2>&1 &
+          ERROR_HANDLER_PID=$!
+
           touch /tmp/agy_stderr.log
 
           cat << 'EOF' > /tmp/run_agy.sh
@@ -750,6 +758,7 @@ jobs:
           touch /tmp/agy_finished
           wait $AUTO_COMMENTER_PID || true
           wait $WATCHDOG_PID || true
+          wait $ERROR_HANDLER_PID || true
 
           NEW_ID=$(ls -t ~/.gemini/antigravity-cli/conversations/*.db 2>/dev/null | head -n 1 | xargs -r basename -s .db || true)
           if [ -n "$NEW_ID" ]; then
@@ -772,12 +781,14 @@ jobs:
             cat /tmp/watchdog.log >> /tmp/agy_combined.log
           fi
 
-          if grep -qi "Authentication required" /tmp/agy_combined.log; then
-            echo "auth_failed=\"true\"" >> /tmp/agy_context.env
+          if [ -f /tmp/error_handler.log ]; then
+            echo -e "\n--- Error Handler Logs ---\n" >> /tmp/agy_combined.log
+            cat /tmp/error_handler.log >> /tmp/agy_combined.log
           fi
 
-          if grep -qiE "quota reached|quota exceeded|rate limit|RESOURCE_EXHAUSTED" /tmp/agy_combined.log; then
-            echo "quota_reached=\"true\"" >> /tmp/agy_context.env
+          # Merge error_handler flags into context env (auth_failed, quota_reached)
+          if [ -f /tmp/agy_error_flags.env ]; then
+            cat /tmp/agy_error_flags.env >> /tmp/agy_context.env
           fi
 
       - name: Save memory
@@ -840,19 +851,19 @@ jobs:
           GH_TOKEN: ${{ github.event.client_payload.gh_token || secrets.GH_TOKEN || secrets.PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -a; [ -f /tmp/agy_context.env ] && . /tmp/agy_context.env; set +a
+          # Also source error_handler flags (auth_failed, quota_reached)
+          set -a; [ -f /tmp/agy_error_flags.env ] && . /tmp/agy_error_flags.env; set +a
           if [ "$JOB_STATUS" = "success" ]; then
             exit 0
           fi
-          if [ "$auth_failed" = "true" ]; then
-            gh issue comment "$ISSUE_NUMBER" --repo "$REPO" \
-              --body "❌ **Antigravity Action Failed.** Your AI token has expired or is corrupted. Please [re-authenticate here](${{ github.event.client_payload.platform_origin }}/setup.html#oauth) to continue using the bot." > /dev/null 2>&1 || true
-          elif [ "$quota_reached" = "true" ]; then
-            gh issue comment "$ISSUE_NUMBER" --repo "$REPO" \
-              --body "⚠️ **Model Quota Reached.** The current AI model's individual quota has been exceeded. You can switch to a different model in your [setup page](${{ github.event.client_payload.platform_origin }}/setup.html) and try again." > /dev/null 2>&1 || true
-          else
-            gh issue comment "$ISSUE_NUMBER" --repo "$REPO" \
-              --body "❌ **Antigravity Action Failed.** The agent encountered an unexpected error. Please check the GitHub Action logs." > /dev/null 2>&1 || true
+          # error_handler.js already posted the comment for auth/quota errors and updated
+          # the issue JSON. We only post the generic fallback for other failures.
+          if [ "$auth_failed" = "true" ] || [ "$quota_reached" = "true" ]; then
+            # Comment already posted by error_handler.js — just fail the step.
+            exit 1
           fi
+          gh issue comment "$ISSUE_NUMBER" --repo "$REPO" \
+            --body "❌ **Antigravity Action Failed.** The agent encountered an unexpected error. Please check the GitHub Action logs." > /dev/null 2>&1 || true
           exit 1
 
       - name: Backup Catch-all Packages
