@@ -234,7 +234,7 @@ jobs:
                 -f content="$CONTENT" \
                 -f branch="agy-memory" > /dev/null 2>&1
           fi
-          LINK="https://github.com/$RUNNER_REPO/blob/agy-memory/${ARTIFACT_DIR}/${FILENAME}?raw=true"
+          LINK="https://github.com/$RUNNER_REPO/blob/agy-memory/${ARTIFACT_DIR}/${FILENAME}?raw=true&v=$(date +%s)"
           SEND_TEXT="**Attached File:** [$TITLE]($LINK)"
           
           if [ -n "$PR_NUMBER" ]; then
