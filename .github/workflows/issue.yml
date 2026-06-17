@@ -849,21 +849,48 @@ jobs:
         env:
           JOB_STATUS: ${{ job.status }}
           GH_TOKEN: ${{ github.event.client_payload.gh_token || secrets.GH_TOKEN || secrets.PAT || secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
+          REPO: ${{ github.event.client_payload.repo }}
         run: |
           set -a; [ -f /tmp/agy_context.env ] && . /tmp/agy_context.env; set +a
-          # Also source error_handler flags (auth_failed, quota_reached)
           set -a; [ -f /tmp/agy_error_flags.env ] && . /tmp/agy_error_flags.env; set +a
           if [ "$JOB_STATUS" = "success" ]; then
             exit 0
           fi
-          # error_handler.js already posted the comment for auth/quota errors and updated
-          # the issue JSON. We only post the generic fallback for other failures.
           if [ "$auth_failed" = "true" ] || [ "$quota_reached" = "true" ]; then
-            # Comment already posted by error_handler.js — just fail the step.
             exit 1
           fi
-          gh issue comment "$ISSUE_NUMBER" --repo "$REPO" \
-            --body "❌ **Antigravity Action Failed.** The agent encountered an unexpected error. Please check the GitHub Action logs." > /dev/null 2>&1 || true
+          if [ -f /tmp/agy_comment_posted ]; then
+            exit 1
+          fi
+          node -e '
+            const fs = require("fs");
+            const execSync = require("child_process").execSync;
+            const issueNum = process.env.ISSUE_NUMBER;
+            const repo = process.env.REPO;
+            const execOpts = { env: { ...process.env, GH_TOKEN: process.env.GH_TOKEN } };
+            
+            try {
+              const body = execSync(`gh issue view ${issueNum} --repo ${repo} --json body --jq .body`, execOpts).toString().trim();
+              const workingRegex = /<Working>([\s\S]*?)<\/Working>/;
+              let workingText = "";
+              if (workingRegex.test(body)) {
+                workingText = body.match(workingRegex)[1].trim();
+                const newBody = body.replace(workingRegex, "").trim();
+                execSync(`gh issue edit ${issueNum} --repo ${repo} --body-file -`, { ...execOpts, input: newBody });
+              }
+              
+              let commentBody = "";
+              if (workingText) {
+                commentBody += `<details>\n<summary>Implementation Progress & Logs</summary>\n\n${workingText}\n</details>\n\n`;
+              }
+              commentBody += "❌ **Antigravity Action Failed.** The agent encountered an unexpected error. Please check the GitHub Action logs.";
+              
+              execSync(`gh issue comment ${issueNum} --repo ${repo} --body-file -`, { ...execOpts, input: commentBody });
+            } catch (e) {
+              console.error("Fallback failure:", e.message);
+            }
+          '
           exit 1
 
       - name: Backup Catch-all Packages
@@ -912,6 +939,13 @@ jobs:
             const fs = require("fs");
             const execSync = require("child_process").execSync;
             let body = fs.readFileSync("issue_body.txt", "utf8");
+
+            // Clean up any remaining <Working> tag
+            const workingRegex = /<Working>([\s\S]*?)<\/Working>/;
+            if (workingRegex.test(body)) {
+              body = body.replace(workingRegex, "").trim();
+            }
+
             const jobStatus = (process.env.JOB_STATUS || "unknown").toLowerCase();
             const reason = process.env.REASON || "";
             
