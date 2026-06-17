@@ -217,24 +217,29 @@ jobs:
           SHA=$(gh api repos/$RUNNER_REPO/contents/${ARTIFACT_DIR}/${FILENAME}?ref=agy-memory -q '.sha' 2>/dev/null || echo "")
           
           if [ -n "$SHA" ]; then
-              gh api \
+              API_RESPONSE=$(gh api \
                 --method PUT \
                 -H "Accept: application/vnd.github+json" \
                 repos/$RUNNER_REPO/contents/${ARTIFACT_DIR}/${FILENAME} \
                 -f message="Update artifact $FILENAME for session" \
                 -f content="$CONTENT" \
                 -f branch="agy-memory" \
-                -f sha="$SHA" > /dev/null 2>&1
+                -f sha="$SHA" 2>&1)
           else
-              gh api \
+              API_RESPONSE=$(gh api \
                 --method PUT \
                 -H "Accept: application/vnd.github+json" \
                 repos/$RUNNER_REPO/contents/${ARTIFACT_DIR}/${FILENAME} \
                 -f message="Add artifact $FILENAME for session" \
                 -f content="$CONTENT" \
-                -f branch="agy-memory" > /dev/null 2>&1
+                -f branch="agy-memory" 2>&1)
           fi
-          LINK="https://github.com/$RUNNER_REPO/blob/agy-memory/${ARTIFACT_DIR}/${FILENAME}?raw=true&v=$(date +%s)"
+          COMMIT_SHA=$(echo "$API_RESPONSE" | jq -r '.commit.sha // empty' 2>/dev/null)
+          if [ -z "$COMMIT_SHA" ]; then
+              # Fallback: fetch the latest commit SHA for this file on agy-memory
+              COMMIT_SHA=$(gh api "repos/$RUNNER_REPO/commits?path=${ARTIFACT_DIR}/${FILENAME}&sha=agy-memory&per_page=1" -q '.[0].sha' 2>/dev/null || echo "agy-memory")
+          fi
+          LINK="https://github.com/$RUNNER_REPO/blob/${COMMIT_SHA}/${ARTIFACT_DIR}/${FILENAME}?raw=true"
           SEND_TEXT="**Attached File:** [$TITLE]($LINK)"
           
           if [ -n "$PR_NUMBER" ]; then
