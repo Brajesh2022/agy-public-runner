@@ -328,6 +328,25 @@ jobs:
           restore-keys: |
             agent-workspace-issue-${{ steps.cache-key-gen.outputs.hash }}-
 
+      - name: Save Restored Workspace Cache Key
+        id: workspace-restore-info
+        if: always()
+        run: |
+          echo "matched_key=${{ steps.workspace-cache.outputs.cache-matched-key }}" >> $GITHUB_OUTPUT
+
+      - name: Restore Packages Cache
+        id: packages-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/Agent-Workspace/.home-backup
+            ~/Agent-Workspace/.config
+            ~/Agent-Workspace/.agent-browser
+            ~/Agent-Workspace/.npm-global
+          key: agent-packages-issue-${{ steps.cache-key-gen.outputs.hash }}-${{ github.run_id }}
+          restore-keys: |
+            agent-packages-issue-${{ steps.cache-key-gen.outputs.hash }}-
+
       - name: Create Workspace if missing
         run: mkdir -p ~/Agent-Workspace
 
@@ -690,6 +709,9 @@ jobs:
           
           echo "$HOME/Agent-Workspace/.npm-global/bin" >> $GITHUB_PATH
 
+          # Snapshot packages state BEFORE agent runs to detect new installs later
+          find ~/Agent-Workspace/.npm-global ~/Agent-Workspace/.config ~/Agent-Workspace/.agent-browser ~/Agent-Workspace/.home-backup -type f -exec stat -c "%n %s %Y" {} + 2>/dev/null | sort | sha256sum | cut -d' ' -f1 > /tmp/packages_hash_before.txt || echo "empty" > /tmp/packages_hash_before.txt
+
       - name: Run agy
         run: |
           set -a; [ -f /tmp/agy_context.env ] && . /tmp/agy_context.env; set +a
@@ -901,19 +923,48 @@ jobs:
           mkdir -p ~/Agent-Workspace/.home-backup
           rsync -a --exclude='.nvm' --exclude='.cargo' --exclude='.rustup' --exclude='.cache' --exclude='.pyenv' --exclude='.bun' --exclude='.npm' --exclude='.gemini' --exclude='.github' --exclude='.ssh' --exclude='Agent-Workspace' --exclude='.local' ~/.[^.]* ~/Agent-Workspace/.home-backup/ 2>/dev/null || true
 
-      - name: Generate Workspace Hash
-        id: workspace-hash
+      - name: Delete Stale Workspace Cache
         if: always()
+        env:
+          GH_TOKEN: ${{ github.event.client_payload.gh_token || secrets.GH_TOKEN || secrets.PAT || secrets.GITHUB_TOKEN }}
         run: |
-          HASH=$(find ~/Agent-Workspace -type f -not -path "*/target-repo/*" -not -path "*/.home-backup/*" -exec stat -c "%n %s" {} + 2>/dev/null | sha256sum | cut -d' ' -f1 || echo "default")
-          echo "hash=$HASH" >> $GITHUB_OUTPUT
+          # Delete the old workspace cache entry so the new one can be saved
+          # actions/cache is immutable — you can't overwrite a key, so we must delete first
+          OLD_KEY="${{ steps.workspace-restore-info.outputs.matched_key }}"
+          if [ -n "$OLD_KEY" ]; then
+            gh cache delete "$OLD_KEY" --repo ${{ github.repository }} 2>/dev/null || true
+          fi
 
       - name: Save Agent Workspace Cache
         uses: actions/cache/save@v4
         if: always()
         with:
           path: ~/Agent-Workspace
-          key: agent-workspace-issue-${{ steps.cache-key-gen.outputs.hash }}-${{ steps.workspace-hash.outputs.hash }}
+          key: agent-workspace-issue-${{ steps.cache-key-gen.outputs.hash }}-${{ github.run_id }}
+
+      - name: Generate Packages Hash
+        id: packages-hash
+        if: always()
+        run: |
+          HASH_AFTER=$(find ~/Agent-Workspace/.npm-global ~/Agent-Workspace/.config ~/Agent-Workspace/.agent-browser ~/Agent-Workspace/.home-backup -type f -exec stat -c "%n %s %Y" {} + 2>/dev/null | sort | sha256sum | cut -d' ' -f1 || echo "empty")
+          HASH_BEFORE=$(cat /tmp/packages_hash_before.txt 2>/dev/null || echo "none")
+          echo "hash=$HASH_AFTER" >> $GITHUB_OUTPUT
+          if [ "$HASH_AFTER" != "$HASH_BEFORE" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Save Packages Cache
+        uses: actions/cache/save@v4
+        if: always() && steps.packages-hash.outputs.changed == 'true'
+        with:
+          path: |
+            ~/Agent-Workspace/.home-backup
+            ~/Agent-Workspace/.config
+            ~/Agent-Workspace/.agent-browser
+            ~/Agent-Workspace/.npm-global
+          key: agent-packages-issue-${{ steps.cache-key-gen.outputs.hash }}-${{ steps.packages-hash.outputs.hash }}
 
       - name: Update Limits and Usages
         if: always()
