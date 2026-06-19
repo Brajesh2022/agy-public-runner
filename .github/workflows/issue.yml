@@ -365,8 +365,12 @@ jobs:
           cp ./agy-defaults/issue_agents.md ~/.gemini/AGENTS.md 2>/dev/null || true
           cp ./agy-defaults/issue_agents.md ~/AGENTS.md 2>/dev/null || true
           cp ./agy-defaults/issue_agents.md ~/Agent-Workspace/AGENTS.md 2>/dev/null || true
+          mkdir -p ~/.gemini/antigravity-cli/skills
           if [ -d "./skills" ]; then
-            cp -r ./skills ~/.gemini/antigravity-cli/skills
+            cp -r ./skills/. ~/.gemini/antigravity-cli/skills/
+          fi
+          if [ -d "./skills-issue" ]; then
+            cp -r ./skills-issue/. ~/.gemini/antigravity-cli/skills/
           fi
 
       - name: Sparse-checkout memory branch
