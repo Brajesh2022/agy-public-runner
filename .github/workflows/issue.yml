@@ -189,81 +189,283 @@ jobs:
           EOF
           chmod +x $HOME/.local/bin/PR
           
-          cat << 'EOF' > $HOME/.local/bin/send
+          mkdir -p $HOME/.local/lib
+
+          cat << 'NODE_EOF' > $HOME/.local/lib/send.js
+          const fs = require('fs');
+          const path = require('path');
+          const { spawn, spawnSync } = require('child_process');
+          const https = require('https');
+
+          // ── Config (baked at YML template time) ─────────────────────
+          const USER_REPO = '${{ github.event.client_payload.repo }}';
+          const RUNNER_REPO = '${{ github.repository_owner }}/.agy-runner';
+          const BOT_USERNAME = '${{ github.actor }}';
+
+          // ── Config (from agent env at runtime) ──────────────────────
+          // GH_TOKEN is NOT exported to the agent's env (only set inline for
+          // auto_commenter.js / watchdog.js / error_handler.js). Fall back to
+          // `gh auth token` — the gh CLI was authenticated earlier in the
+          // workflow via `echo "..." | gh auth login --with-token`.
+          let GH_TOKEN = process.env.GH_TOKEN;
+          if (!GH_TOKEN) {
+            try {
+          let GH_TOKEN = process.env.GH_TOKEN;
+          if (!GH_TOKEN) {
+            try {
+              const r = spawnSync('gh', ['auth', 'token'], { encoding: 'utf8' });
+              if (!r.error && r.status === 0) {
+                GH_TOKEN = r.stdout.trim();
+              }
+            } catch (e) {}
+          }
+            } catch (e) {}
+          }
+          const ISSUE_NUMBER = process.env.ISSUE_NUMBER;
+          const PR_NUMBER = process.env.PR_NUMBER || '';
+            if (!REPO_ID) {
+              console.error('send: REPO_ID is not set — cannot determine artifact path');
+              process.exit(1);
+            }
+          const EDIT_LAST = process.env.AGY_SEND_EDIT_LAST === 'true';
+          // Read the memory dir path from a temp file (written by the
+          // sparse-checkout step) — avoids exposing AGY_MEMORY_DIR as an
+          // env var to the agent.
+          const MEMORY_DIR = fs.existsSync('/tmp/agy_memory_dir')
+            ? fs.readFileSync('/tmp/agy_memory_dir', 'utf8').trim()
+            : path.join(process.env.GITHUB_WORKSPACE || '', 'agy-memory');
+
+          // ── Timing instrumentation ──────────────────────────────────
+          const t0 = Date.now();
+          const timings = [];
+          const mark = (label) => timings.push(`${label}:${Date.now() - t0}ms`);
+
+          // ── HTTP keep-alive agent (single TLS handshake for all calls)
+          const agent = new https.Agent({ keepAlive: true, maxSockets: 4 });
+
+          function ghApi(method, repo, urlPath, body) {
+            return new Promise((resolve, reject) => {
+              const bodyStr = body ? JSON.stringify(body) : null;
+              const headers = {
+                'Authorization': `Bearer ${GH_TOKEN}`,
+                'Accept': 'application/vnd.github+json',
+                'User-Agent': 'agy-send',
+              };
+              if (body) headers['Content-Type'] = 'application/json';
+              const req = https.request({
+                hostname: 'api.github.com',
+                path: `/repos/${repo}/${urlPath}`,
+                method,
+                headers,
+                agent,
+              }, (res) => {
+                let data = '';
+                res.on('data', (chunk) => data += chunk);
+                res.on('end', () => {
+                  let parsed = null;
+                  try { parsed = data ? JSON.parse(data) : null; } catch (e) {}
+                  resolve({ status: res.statusCode, body: parsed, raw: data });
+                });
+              });
+              req.on('error', reject);
+              if (bodyStr) req.write(bodyStr);
+              req.end();
+            });
+          }
+
+          function git(args) {
+            return new Promise((resolve) => {
+              const proc = spawn('git', args, {
+                cwd: MEMORY_DIR,
+                encoding: 'utf8',
+                stdio: ['pipe', 'pipe', 'pipe'],
+              });
+              let stdout = '', stderr = '';
+              proc.stdout.on('data', (d) => stdout += d);
+              proc.stderr.on('data', (d) => stderr += d);
+              // Handle spawn errors (e.g. ENOENT, EMFILE) — without this
+              // listener Node would throw an unhandled exception and the
+              // Promise would never resolve.
+              proc.on('error', (err) => {
+                resolve({ status: -1, stdout, stderr: err.message });
+              });
+              proc.on('close', (code) => resolve({ status: code, stdout, stderr }));
+            });
+          }
+
+          // Push with retry: if non-fast-forward (concurrent send), fetch +
+          // rebase + retry. Safe because we only add new files.
+          // A randomized delay between attempts lets concurrent sends settle
+          // and avoids a tight retry loop hammering the remote.
+          async function gitPushWithRetry() {
+            for (let i = 0; i < 3; i++) {
+              const result = await git(['push', 'origin', 'agy-memory']);
+              if (result.status === 0) return true;
+              await git(['fetch', 'origin', 'agy-memory']);
+              const rebase = await git(['rebase', 'origin/agy-memory']);
+              if (rebase.status !== 0) {
+                await git(['rebase', '--abort']);
+              }
+              // Randomized backoff: 1-3s, only between retries (not after success)
+              if (i < 2) {
+                await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
+              }
+            }
+            return false;
+          }
+
+          async function main() {
+            // Validate raw args BEFORE path.resolve — otherwise an empty
+            // filepath resolves to CWD and causes a cryptic EISDIR error
+            // downstream in fs.copyFileSync.
+            const rawFilepath = process.argv[2];
+            const title = process.argv[3] || '';
+
+            if (!rawFilepath || !title) {
+              console.error('Usage: send <filepath> <title>');
+              process.exit(1);
+            }
+            const filepath = path.resolve(rawFilepath);
+            if (!ISSUE_NUMBER) {
+              console.error("sorry you cant send file in this session... It's not allowed...");
+              process.exit(1);
+            }
+            if (!fs.existsSync(filepath)) {
+              console.error(`Error: File ${filepath} does not exist.`);
+              process.exit(1);
+            }
+            if (!fs.existsSync(path.join(MEMORY_DIR, '.git'))) {
+              console.error(`Error: agy-memory working tree not found at ${MEMORY_DIR}`);
+              process.exit(1);
+            }
+
+            const filename = path.basename(filepath);
+            const fileSize = fs.statSync(filepath).size;
+            const artifactDir = PR_NUMBER
+              ? `repo-${REPO_ID}/pr-${PR_NUMBER}/.artifact`
+              : `repo-${REPO_ID}/issue-${ISSUE_NUMBER}/.artifact`;
+            const artifactRelPath = `${artifactDir}/${filename}`;
+            const artifactAbsPath = path.join(MEMORY_DIR, artifactDir, filename);
+
+            // ── Step 1: Copy file into agy-memory working tree ───────
+            fs.mkdirSync(path.dirname(artifactAbsPath), { recursive: true });
+            fs.copyFileSync(filepath, artifactAbsPath);
+            mark('copy_file');
+
+            // ── Step 2: git add + commit (fast, local) ───────────────
+            await git(['add', artifactRelPath]);
+            const commitResult = await git(['commit', '-m',
+              `Add artifact ${filename} for session #${ISSUE_NUMBER}`]);
+            mark('git_commit');
+            const needsPush = commitResult.status === 0;
+
+            // ── Step 3: Parallel — push + last-comment fetch ─────────
+            const tasks = [];
+
+            if (needsPush) {
+              tasks.push(gitPushWithRetry().then(ok => ({ pushOk: ok })));
+            } else {
+              tasks.push(Promise.resolve({ pushOk: true }));
+            }
+
+            if (EDIT_LAST) {
+              // Tier 1.2: paginated last-comment fetch (per_page=1&direction=desc)
+              // instead of fetching the entire comment thread.
+              tasks.push(
+                ghApi('GET', RUNNER_REPO,
+                  `issues/${ISSUE_NUMBER}/comments?per_page=1&direction=desc`)
+                  .then(res => ({ lastComment: res.body && res.body[0] || null }))
+              );
+            } else {
+              tasks.push(Promise.resolve({ lastComment: null }));
+            }
+
+            const [pushResult, commentResult] = await Promise.all(tasks);
+
+            if (!pushResult.pushOk) {
+              console.error('send: failed to push artifact after 3 retries');
+              process.exit(1);
+            }
+            mark('push_and_fetch');
+
+            // ── Step 4: Get commit SHA for stable raw link ───────────
+            const revResult = spawnSync('git', ['rev-parse', 'HEAD'], {
+              cwd: MEMORY_DIR, encoding: 'utf8',
+            });
+            const commitSha = (revResult.error || revResult.status !== 0)
+              ? null
+              : revResult.stdout.trim();
+            if (!commitSha) {
+              console.error('send: could not resolve HEAD SHA — aborting');
+              process.exit(1);
+            }
+            const encodedRelPath = artifactRelPath.split('/').map(encodeURIComponent).join('/');
+            const link = `https://github.com/${RUNNER_REPO}/blob/${commitSha}/${encodedRelPath}?raw=true`;
+            const sendText = `**Attached File:** [${title}](${link})`;
+
+            // ── Step 5: Post comments in parallel ────────────────────
+            // - Always post (or edit-last) on the runner repo issue (session log)
+            // - If PR_NUMBER is set, also post on the PR (user's repo)
+            const postTasks = [];
+            const lastComment = commentResult.lastComment;
+
+            const isBotComment = lastComment && lastComment.user
+              && lastComment.user.login === BOT_USERNAME;
+
+            if (EDIT_LAST && isBotComment) {
+              // Append to existing bot comment (consolidation UX)
+              postTasks.push(ghApi('PATCH', RUNNER_REPO,
+                `issues/comments/${lastComment.id}`, {
+                  body: lastComment.body + '\n\n' + sendText,
+                }));
+            } else {
+              postTasks.push(ghApi('POST', RUNNER_REPO,
+                `issues/${ISSUE_NUMBER}/comments`, { body: sendText }));
+            }
+
+            if (PR_NUMBER) {
+              // Also post to the PR (user's repo) — uses issues/comments endpoint
+              // because GitHub treats PRs as issues for commenting.
+              postTasks.push(ghApi('POST', USER_REPO,
+                `issues/${PR_NUMBER}/comments`, { body: sendText }));
+            }
+
+            const postResults = await Promise.all(postTasks);
+            mark('post_comments');
+
+            const failures = postResults.filter(r => r.status >= 400);
+            if (failures.length > 0) {
+              console.error(`send: warning — ${failures.length} comment post(s) failed`);
+              failures.forEach(f => {
+                console.error(`  HTTP ${f.status}: ${(f.raw || '').slice(0, 200)}`);
+              });
+            }
+
+            // ── Done ──────────────────────────────────────────────────
+            console.log(`File sent successfully: ${filename}`);
+
+            // Log timings for observability
+            const total = Date.now() - t0;
+            fs.appendFileSync('/tmp/send_timings.log',
+              `[${new Date().toISOString()}] ${filename} (${fileSize}B) total=${total}ms\n` +
+              timings.map(t => `  ${t}`).join('\n') + '\n\n');
+
+            agent.destroy();
+          }
+
+          main().catch((err) => {
+            console.error(`send: ${err.message}`);
+            fs.appendFileSync('/tmp/send_timings.log',
+              `[${new Date().toISOString()}] ERROR: ${err.message}\n`);
+            agent.destroy();
+            process.exit(1);
+          });
+          NODE_EOF
+
+          cat << 'BASH_EOF' > $HOME/.local/bin/send
           #!/bin/bash
-          if [ -z "$1" ] || [ -z "$2" ]; then
-              echo "Usage: send <filepath> <title>"
-              exit 1
-          fi
-          FILEPATH=$(realpath "$1")
-          TITLE="$2"
-          RUNNER_REPO="${{ github.repository_owner }}/.agy-runner"
-          if [ -z "$ISSUE_NUMBER" ]; then
-              echo "sorry you cant send file in this session... It's not allowed..."
-              exit 1
-          fi
-          if [ ! -f "$FILEPATH" ]; then
-              echo "Error: File $FILEPATH does not exist."
-              exit 1
-          fi
-          FILENAME=$(basename "$FILEPATH")
-          ARTIFACT_DIR="repo-${REPO_ID}/issue-${ISSUE_NUMBER}/.artifact"
-          if [ -n "$PR_NUMBER" ]; then
-              ARTIFACT_DIR="repo-${REPO_ID}/pr-${PR_NUMBER}/.artifact"
-          fi
-          
-          CONTENT=$(base64 -w 0 "$FILEPATH")
-          
-          SHA=$(gh api repos/$RUNNER_REPO/contents/${ARTIFACT_DIR}/${FILENAME}?ref=agy-memory -q '.sha' 2>/dev/null || echo "")
-          
-          if [ -n "$SHA" ]; then
-              API_RESPONSE=$(gh api \
-                --method PUT \
-                -H "Accept: application/vnd.github+json" \
-                repos/$RUNNER_REPO/contents/${ARTIFACT_DIR}/${FILENAME} \
-                -f message="Update artifact $FILENAME for session" \
-                -f content="$CONTENT" \
-                -f branch="agy-memory" \
-                -f sha="$SHA" 2>&1)
-          else
-              API_RESPONSE=$(gh api \
-                --method PUT \
-                -H "Accept: application/vnd.github+json" \
-                repos/$RUNNER_REPO/contents/${ARTIFACT_DIR}/${FILENAME} \
-                -f message="Add artifact $FILENAME for session" \
-                -f content="$CONTENT" \
-                -f branch="agy-memory" 2>&1)
-          fi
-          COMMIT_SHA=$(echo "$API_RESPONSE" | jq -r '.commit.sha // empty' 2>/dev/null)
-          if [ -z "$COMMIT_SHA" ]; then
-              # Fallback: fetch the latest commit SHA for this file on agy-memory
-              COMMIT_SHA=$(gh api "repos/$RUNNER_REPO/commits?path=${ARTIFACT_DIR}/${FILENAME}&sha=agy-memory&per_page=1" -q '.[0].sha' 2>/dev/null || echo "agy-memory")
-          fi
-          LINK="https://github.com/$RUNNER_REPO/blob/${COMMIT_SHA}/${ARTIFACT_DIR}/${FILENAME}?raw=true"
-          SEND_TEXT="**Attached File:** [$TITLE]($LINK)"
-          
-          if [ -n "$PR_NUMBER" ]; then
-              gh pr comment "$PR_NUMBER" --repo "${{ github.event.client_payload.repo }}" --body "$SEND_TEXT" > /dev/null 2>&1
-              TARGET_ISSUE="$PR_NUMBER"
-          else
-              TARGET_ISSUE="$ISSUE_NUMBER"
-          fi
-          
-          LAST_COMMENT=$(gh issue view "$TARGET_ISSUE" --repo "$RUNNER_REPO" --json comments --jq '.comments[-1]')
-          if [ "$LAST_COMMENT" != "null" ] && [ -n "$LAST_COMMENT" ]; then
-              LAST_AUTHOR=$(echo "$LAST_COMMENT" | jq -r '.author.login')
-              LAST_BODY=$(echo "$LAST_COMMENT" | jq -r '.body')
-              if [[ "$LAST_AUTHOR" == *"github-actions"* ]]; then
-                  python3 -c 'import sys; open("/tmp/send_new_body.txt","w").write(sys.argv[1] + "\n\n" + sys.argv[2])' "$LAST_BODY" "$SEND_TEXT"
-                  gh issue comment "$TARGET_ISSUE" --repo "$RUNNER_REPO" --edit-last --body-file /tmp/send_new_body.txt > /dev/null 2>&1
-              else
-                  gh issue comment "$TARGET_ISSUE" --repo "$RUNNER_REPO" --body "$SEND_TEXT" > /dev/null 2>&1
-              fi
-          else
-              gh issue comment "$TARGET_ISSUE" --repo "$RUNNER_REPO" --body "$SEND_TEXT" > /dev/null 2>&1
-          fi
-          echo "File sent successfully: $FILENAME"
-          EOF
+          exec node "$HOME/.local/lib/send.js" "$@"
+          BASH_EOF
           chmod +x $HOME/.local/bin/send          
 
       - name: Setup gh CLI
@@ -379,6 +581,7 @@ jobs:
           echo "ISSUE_NUMBER=\"$ISSUE_NUMBER\"" >> /tmp/agy_context.env
           
           mkdir agy-memory
+          echo "$GITHUB_WORKSPACE/agy-memory" > /tmp/agy_memory_dir
           cd agy-memory
           git init > /dev/null 2>&1
           git remote add origin https://x-access-token:${{ github.event.client_payload.gh_token || secrets.GH_TOKEN || secrets.PAT || secrets.GITHUB_TOKEN }}@github.com/${{ github.repository_owner }}/.agy-runner.git > /dev/null 2>&1
