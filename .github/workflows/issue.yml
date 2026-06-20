@@ -138,6 +138,23 @@ jobs:
           path: ~/.local/bin/agy
           key: agy-cli-linux-${{ steps.date.outputs.date }}
 
+      - name: Cache pip downloads for headroom
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-headroom-mcp-code-${{ steps.date.outputs.date }}
+          restore-keys: |
+            ${{ runner.os }}-pip-headroom-mcp-code-
+
+      - name: Cache RTK binary
+        id: cache-rtk
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bin/rtk
+          key: rtk-linux-${{ steps.date.outputs.date }}
+          restore-keys: |
+            rtk-linux-
+
       - name: Install agy
         if: steps.cache-agy.outputs.cache-hit != 'true'
         run: |
@@ -145,11 +162,22 @@ jobs:
 
       - name: Install Context Compressors
         run: |
-          pipx install "headroom-ai[all]"
-          # RTK is a single Rust binary — install via the official curl installer
-          # (the "rtk-ai" npm package does NOT exist). Installs to ~/.local/bin,
-          # which the next step below adds to $GITHUB_PATH.
-          curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+          # Install only the MCP server + code compressor extras.
+          # `mcp` registers headroom_compress / headroom_retrieve / headroom_stats as MCP tools.
+          # `code` adds AST-aware CodeCompressor (tree-sitter-language-pack, ~50 MB)
+          # for 40-70% savings on source-file reads vs the 30-50% TextCompressor fallback.
+          # Skipping `[all]` avoids pulling ~500+ MB of unneeded ML/eval/image deps.
+          # --prefer-binary forces pip to pick prebuilt wheels over source builds,
+          # skipping Rust/C++ compilation of native extensions.
+          pipx install --pip-args="--prefer-binary" "headroom-ai[mcp,code]"
+
+          # RTK (Rust Token Killer, github.com/rtk-ai/rtk) — single Rust binary.
+          # The "rtk-ai" npm package does NOT exist; install via the official curl
+          # installer. Skipped on cache hit. Installs to ~/.local/bin, which the
+          # next step below adds to $GITHUB_PATH.
+          if [ "${{ steps.cache-rtk.outputs.cache-hit }}" != "true" ]; then
+            curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+          fi
 
       - name: Add agy to PATH
         run: |
