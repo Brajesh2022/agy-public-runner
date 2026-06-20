@@ -667,7 +667,7 @@ jobs:
               // after `wait` below.
               let envContent = "";
               for (const [key, value] of Object.entries(envVars)) {
-                const escapedValue = String(value).replace(/"/g, "\\"");
+                const escapedValue = String(value).replace(/"/g, "\\\"");
                 envContent += `${key}="${escapedValue}"\n`;
               }
               fs.writeFileSync("/tmp/agy_context_target.env", envContent);
