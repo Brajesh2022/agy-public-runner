@@ -15,7 +15,7 @@ permissions:
 
 env:
   DEV_MODE: "false"
-  DELETE_LOGS: "false"
+  DELETE_LOGS: "true"
 
 jobs:
   delete-logs:
@@ -152,7 +152,9 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
 
       - name: Add agy to PATH
-        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+        run: |
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          echo "/opt/pipx_bin" >> $GITHUB_PATH
 
       - name: Setup Custom Commands
         env:
@@ -362,6 +364,7 @@ jobs:
         run: |
           mkdir -p ~/.gemini/antigravity-cli/cache
           cp ./agy-defaults/settings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
+          cp ./agy-defaults/mcp_config.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
           cp ./agy-defaults/keybindings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
           cp ./agy-defaults/cache/onboarding.json ~/.gemini/antigravity-cli/cache/ 2>/dev/null || true
           echo '${{ secrets.AGY_OAUTH_TOKEN }}' > ~/.gemini/antigravity-cli/antigravity-oauth-token
@@ -430,6 +433,7 @@ jobs:
             mkdir -p ~/.gemini/antigravity-cli/cache
             echo '${{ secrets.AGY_OAUTH_TOKEN }}' > ~/.gemini/antigravity-cli/antigravity-oauth-token
             cp ../agy-defaults/settings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
+            cp ../agy-defaults/mcp_config.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
             cp ../agy-defaults/keybindings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
             cp ../agy-defaults/cache/onboarding.json ~/.gemini/antigravity-cli/cache/ 2>/dev/null || true
             cp ../agy-defaults/installation_id ~/.gemini/antigravity-cli/ 2>/dev/null || true
@@ -845,6 +849,7 @@ jobs:
 
             rm -f ~/.gemini/antigravity-cli/antigravity-oauth-token
             rm -f ~/.gemini/antigravity-cli/settings.json
+            rm -f ~/.gemini/antigravity-cli/mcp_config.json
             rm -f ~/.gemini/antigravity-cli/keybindings.json
             rm -f ~/.gemini/antigravity-cli/installation_id
             rm -rf ~/.gemini/antigravity-cli/cache ~/.gemini/antigravity-cli/skills
