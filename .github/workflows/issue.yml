@@ -321,37 +321,58 @@ jobs:
       - name: Setup gh CLI
         run: echo "${{ github.event.client_payload.gh_token || secrets.GH_TOKEN || secrets.PAT || secrets.GITHUB_TOKEN }}" | gh auth login --with-token > /dev/null 2>&1
 
-      - name: Mark Issue as Running
+      - name: Mark Issue as Running + Configure Git Identity (parallel)
         env:
           GH_TOKEN: ${{ github.event.client_payload.gh_token || secrets.GH_TOKEN || secrets.PAT || secrets.GITHUB_TOKEN }}
         run: |
+          # Background the Mark-Issue-as-Running API calls (2 network round-trips,
+          # ~500ms each) and run the pure-local git config work concurrently.
+          # Same & + wait technique as the 'Install agy + headroom + rtk' step.
+          #
+          # Before: Mark Issue (~1s network) + Git Identity (~0s local) = ~1s
+          # After:  max(Mark Issue ~1s, Git Identity ~0s)             = ~0.5-1s
+          #         (git config runs "for free" while the API call is in flight)
+          set -e
+          LOG_DIR=$(mktemp -d)
+
           ISSUE_NUM=${{ github.event.client_payload.issue_number }}
           REPO=${{ github.event.client_payload.repo }}
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          gh api repos/$REPO/issues/$ISSUE_NUM --jq .body > issue_body.txt
-          node -e '
-            const fs = require("fs");
-            let body = fs.readFileSync("issue_body.txt", "utf8");
-            const runUrl = process.argv[1];
-            
-            let jsonMatch = body.match(/```json\n([\s\S]*?)\n```/);
-            let meta = {};
-            if (jsonMatch) {
-              try { meta = JSON.parse(jsonMatch[1]); } catch(e) {}
-              meta.status = "running";
-              meta.action_url = runUrl;
-              body = body.replace(jsonMatch[0], "```json\n" + JSON.stringify(meta, null, 2) + "\n```");
-            } else {
-              meta.status = "running";
-              meta.action_url = runUrl;
-              body = "```json\n" + JSON.stringify(meta, null, 2) + "\n```\n\n" + body;
-            }
-            fs.writeFileSync("new_body.txt", body);
-          ' "$RUN_URL"
-          gh issue edit $ISSUE_NUM --repo $REPO --body-file new_body.txt > /dev/null 2>&1
 
-      - name: Configure Global Git Identity & Auth
-        run: |
+          # 1. Mark Issue as Running — backgrounded (gh api + node + gh issue edit)
+          #    These 3 commands are sequential within the subshell (each depends
+          #    on the previous's output file) but the whole sequence is
+          #    independent of the git config work below.
+          (
+            gh api repos/$REPO/issues/$ISSUE_NUM --jq .body > issue_body.txt
+            node -e '
+              const fs = require("fs");
+              let body = fs.readFileSync("issue_body.txt", "utf8");
+              const runUrl = process.argv[1];
+
+              let jsonMatch = body.match(/```json\n([\s\S]*?)\n```/);
+              let meta = {};
+              if (jsonMatch) {
+                try { meta = JSON.parse(jsonMatch[1]); } catch(e) {}
+                meta.status = "running";
+                meta.action_url = runUrl;
+                body = body.replace(jsonMatch[0], "```json\n" + JSON.stringify(meta, null, 2) + "\n```");
+              } else {
+                meta.status = "running";
+                meta.action_url = runUrl;
+                body = "```json\n" + JSON.stringify(meta, null, 2) + "\n```\n\n" + body;
+              }
+              fs.writeFileSync("new_body.txt", body);
+            ' "$RUN_URL"
+            # stdout suppressed (gh prints "✓ Edited issue #N" on success);
+            # stderr left going to the subshell's stderr so we can capture it
+            # in mark_issue.err below if this fails.
+            gh issue edit $ISSUE_NUM --repo $REPO --body-file new_body.txt > /dev/null
+          ) 2>"$LOG_DIR/mark_issue.err" &
+          MARK_PID=$!
+
+          # 2. Configure Global Git Identity & Auth — runs concurrently
+          #    (pure local: jq + git config, no network)
           GIT_USER_NAME=$(jq -r '.git_user_name // "${{ github.actor }}"' ./agy-defaults/settings.json 2>/dev/null || echo "${{ github.actor }}")
           GIT_USER_EMAIL=$(jq -r '.git_user_email // "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"' ./agy-defaults/settings.json 2>/dev/null || echo "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com")
           git config --global user.name "$GIT_USER_NAME"
@@ -369,6 +390,15 @@ jobs:
             sed -i "s|placeholder|${CO_AUTHOR_NAME} <${CO_AUTHOR_EMAIL}>|" ~/.githooks/prepare-commit-msg
             chmod +x ~/.githooks/prepare-commit-msg
             git config --global core.hooksPath ~/.githooks
+          fi
+
+          # Wait for the backgrounded Mark-Issue API calls to finish.
+          # If it failed, print the stderr log and propagate the failure
+          # (preserves original behavior: Mark Issue failure = step failure).
+          if ! wait $MARK_PID; then
+            echo "=== Mark Issue as Running failed ===" >&2
+            cat "$LOG_DIR/mark_issue.err" >&2
+            exit 1
           fi
 
       - name: Restore Agent Workspace Cache
@@ -426,200 +456,247 @@ jobs:
             cp -r ./skills-issue/. ~/.gemini/antigravity-cli/skills/
           fi
 
-      - name: Sparse-checkout memory branch
+      - name: Sparse-checkout memory branch + Determine Target Repo (parallel)
         run: |
-          REPO="${{ github.event.client_payload.repo }}"
-          echo "REPO=\"$REPO\"" >> /tmp/agy_context.env
-          REPO_ID=$(gh api repos/${{ github.event.client_payload.repo }} --jq .id)
-          echo "REPO_ID=\"$REPO_ID\"" >> /tmp/agy_context.env
-          ISSUE_NUMBER=${{ github.event.client_payload.issue_number }}
-          echo "ISSUE_NUMBER=\"$ISSUE_NUMBER\"" >> /tmp/agy_context.env
-          
-          mkdir agy-memory
-          cd agy-memory
-          git init > /dev/null 2>&1
-          git remote add origin https://x-access-token:${{ github.event.client_payload.gh_token || secrets.GH_TOKEN || secrets.PAT || secrets.GITHUB_TOKEN }}@github.com/${{ github.repository_owner }}/.agy-runner.git > /dev/null 2>&1
-          
-          if git ls-remote --exit-code --heads origin agy-memory > /dev/null 2>&1; then
-            git fetch --depth 1 --filter=blob:none origin agy-memory > /dev/null 2>&1
-            git sparse-checkout set "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/" > /dev/null 2>&1
-            git checkout agy-memory > /dev/null 2>&1
-          else
-            git checkout --orphan agy-memory > /dev/null 2>&1
-            git rm -rf . > /dev/null 2>&1 || true
-          fi
-          
-          if [ -d "repo-${REPO_ID}/issue-${ISSUE_NUMBER}" ]; then
-            echo "MEMORY_EXISTS=\"true\"" >> /tmp/agy_context.env
-            mkdir -p ~/.gemini
-            if [ -f "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/memory.tar.gz" ]; then
-              mkdir -p ~/.gemini/antigravity-cli
-              tar -xzf repo-${REPO_ID}/issue-${ISSUE_NUMBER}/memory.tar.gz -C ~/.gemini/antigravity-cli/ || true
-            fi
-            if [ -d "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/antigravity-cli" ]; then
-              cp -r "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/antigravity-cli" ~/.gemini/
-            fi
-            if [ -f "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/conversation_id.txt" ]; then
-              cat "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/conversation_id.txt" | { read id; echo "AGY_CONVERSATION_ID=\"$id\"" >> /tmp/agy_context.env; }
-            fi
-            if [ -f "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/repo_state.json" ]; then
-              cp "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/repo_state.json" ~/.gemini/repo_state.json
-            fi
-            
-            if [ -d "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/attachments" ]; then
-              mkdir -p ~/Agent-Workspace/attachments
-              mv repo-${REPO_ID}/issue-${ISSUE_NUMBER}/attachments/* ~/Agent-Workspace/attachments/ 2>/dev/null || true
-              rm -rf "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/attachments"
-            fi
-            
-            mkdir -p ~/.gemini/antigravity-cli/cache
-            echo '${{ secrets.AGY_OAUTH_TOKEN }}' > ~/.gemini/antigravity-cli/antigravity-oauth-token
-            cp ../agy-defaults/settings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
-            cp ../agy-defaults/mcp_config.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
-            cp ../agy-defaults/keybindings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
-            cp ../agy-defaults/cache/onboarding.json ~/.gemini/antigravity-cli/cache/ 2>/dev/null || true
-            cp ../agy-defaults/installation_id ~/.gemini/antigravity-cli/ 2>/dev/null || true
-            cp ../agy-defaults/issue_agents.md ~/.gemini/AGENTS.md 2>/dev/null || true
-            cp ../agy-defaults/issue_agents.md ~/AGENTS.md 2>/dev/null || true
-          else
-            echo "MEMORY_EXISTS=\"false\"" >> /tmp/agy_context.env
-          fi
+          # Run two independent network-heavy steps concurrently:
+          #   1. Sparse-checkout memory branch  (git fetch + checkout, ~2s)
+          #   2. Determine Target Repo & Branch (multiple gh api calls, ~1s)
+          # Before: 2s + 1s = ~3s sequential
+          # After:  max(2s, 1s) = ~2s parallel
+          #
+          # Data independence: both write DIFFERENT env keys to DIFFERENT files,
+          # then we concat into /tmp/agy_context.env after wait. This avoids
+          # the race condition that would exist if both wrote to the same file
+          # concurrently.
+          #   Sparse-checkout  -> /tmp/agy_context.env          (REPO, REPO_ID, ISSUE_NUMBER, MEMORY_EXISTS, AGY_CONVERSATION_ID)
+          #   Determine Target -> /tmp/agy_context_target.env   (TARGET_REPO, TARGET_BRANCH, IS_FIRST_RUN, PR_*, EXTRACTED_MODEL, ...)
+          set -e
+          LOG_DIR=$(mktemp -d)
 
-      - name: Determine Target Repo & Branch
-        run: |
-          node -e '
-            const fs = require("fs");
-            const execSync = require("child_process").execSync;
+          # 1. Sparse-checkout memory branch (backgrounded)
+          (
+            REPO="${{ github.event.client_payload.repo }}"
+            echo "REPO=\"$REPO\"" >> /tmp/agy_context.env
+            REPO_ID=$(gh api repos/${{ github.event.client_payload.repo }} --jq .id)
+            echo "REPO_ID=\"$REPO_ID\"" >> /tmp/agy_context.env
+            ISSUE_NUMBER=${{ github.event.client_payload.issue_number }}
+            echo "ISSUE_NUMBER=\"$ISSUE_NUMBER\"" >> /tmp/agy_context.env
 
-            const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
-            const cp = event.client_payload || {};
+            mkdir agy-memory
+            cd agy-memory
+            git init > /dev/null 2>&1
+            git remote add origin https://x-access-token:${{ github.event.client_payload.gh_token || secrets.GH_TOKEN || secrets.PAT || secrets.GITHUB_TOKEN }}@github.com/${{ github.repository_owner }}/.agy-runner.git > /dev/null 2>&1
 
-            const issueBody = cp.issue_data?.body || "";
-            const commentBody = cp.comment_body || "";
-            let targetRepo = cp.repo || "";
-            let targetBranch = "";
-            try {
-              targetBranch = execSync(`gh api repos/${targetRepo} --jq .default_branch`).toString().trim();
-            } catch (e) {
-              targetBranch = "main";
-            }
+            if git ls-remote --exit-code --heads origin agy-memory > /dev/null 2>&1; then
+              git fetch --depth 1 --filter=blob:none origin agy-memory > /dev/null 2>&1
+              git sparse-checkout set "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/" > /dev/null 2>&1
+              git checkout agy-memory > /dev/null 2>&1
+            else
+              git checkout --orphan agy-memory > /dev/null 2>&1
+              git rm -rf . > /dev/null 2>&1 || true
+            fi
 
-            let extractedModel = "";
-            let existingPrUrl = "";
-            let existingPrBranch = "";
-            let lastSha = "";
-            let attachmentsJson = "";
-            let skillsJson = "";
-            let cleanIssueBody = issueBody;
-            let cleanCommentBody = commentBody;
+            if [ -d "repo-${REPO_ID}/issue-${ISSUE_NUMBER}" ]; then
+              echo "MEMORY_EXISTS=\"true\"" >> /tmp/agy_context.env
+              mkdir -p ~/.gemini
+              if [ -f "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/memory.tar.gz" ]; then
+                mkdir -p ~/.gemini/antigravity-cli
+                tar -xzf repo-${REPO_ID}/issue-${ISSUE_NUMBER}/memory.tar.gz -C ~/.gemini/antigravity-cli/ || true
+              fi
+              if [ -d "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/antigravity-cli" ]; then
+                cp -r "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/antigravity-cli" ~/.gemini/
+              fi
+              if [ -f "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/conversation_id.txt" ]; then
+                cat "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/conversation_id.txt" | { read id; echo "AGY_CONVERSATION_ID=\"$id\"" >> /tmp/agy_context.env; }
+              fi
+              if [ -f "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/repo_state.json" ]; then
+                cp "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/repo_state.json" ~/.gemini/repo_state.json
+              fi
 
-            const jsonMatch = issueBody.match(/```json\n([\s\S]*?)\n```/);
-            if (jsonMatch) {
+              if [ -d "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/attachments" ]; then
+                mkdir -p ~/Agent-Workspace/attachments
+                mv repo-${REPO_ID}/issue-${ISSUE_NUMBER}/attachments/* ~/Agent-Workspace/attachments/ 2>/dev/null || true
+                rm -rf "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/attachments"
+              fi
+
+              mkdir -p ~/.gemini/antigravity-cli/cache
+              echo '${{ secrets.AGY_OAUTH_TOKEN }}' > ~/.gemini/antigravity-cli/antigravity-oauth-token
+              cp ../agy-defaults/settings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
+              cp ../agy-defaults/mcp_config.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
+              cp ../agy-defaults/keybindings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
+              cp ../agy-defaults/cache/onboarding.json ~/.gemini/antigravity-cli/cache/ 2>/dev/null || true
+              cp ../agy-defaults/installation_id ~/.gemini/antigravity-cli/ 2>/dev/null || true
+              cp ../agy-defaults/issue_agents.md ~/.gemini/AGENTS.md 2>/dev/null || true
+              cp ../agy-defaults/issue_agents.md ~/AGENTS.md 2>/dev/null || true
+            else
+              echo "MEMORY_EXISTS=\"false\"" >> /tmp/agy_context.env
+            fi
+          ) 2>"$LOG_DIR/sparse_checkout.err" &
+          SPARSE_PID=$!
+
+          # 2. Determine Target Repo & Branch (backgrounded, writes to separate file)
+          #    Original logic preserved verbatim — only difference is that it writes
+          #    to /tmp/agy_context_target.env instead of reading+rewriting
+          #    /tmp/agy_context.env. We concat the two files after wait.
+          (
+            node -e '
+              const fs = require("fs");
+              const execSync = require("child_process").execSync;
+
+              const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+              const cp = event.client_payload || {};
+
+              const issueBody = cp.issue_data?.body || "";
+              const commentBody = cp.comment_body || "";
+              let targetRepo = cp.repo || "";
+              let targetBranch = "";
               try {
-                const meta = JSON.parse(jsonMatch[1]);
-                if (meta.repository) targetRepo = meta.repository.trim();
-                if (meta.branch) targetBranch = meta.branch.trim();
-                if (meta.model) extractedModel = meta.model.trim();
-                if (meta.pr_url) existingPrUrl = meta.pr_url.trim();
-                if (meta.pr_branch) existingPrBranch = meta.pr_branch.trim();
-                if (meta.sha) lastSha = meta.sha.trim();
-                if (meta.attachments) {
-                  attachmentsJson = Array.isArray(meta.attachments) ? meta.attachments.join(", ") : "";
-                }
-                if (meta.skills) {
-                  skillsJson = Array.isArray(meta.skills) ? meta.skills.join(", ") : "";
-                }
-              } catch(e) {}
-              cleanIssueBody = issueBody.replace(jsonMatch[0], "");
-            }
+                targetBranch = execSync(`gh api repos/${targetRepo} --jq .default_branch`).toString().trim();
+              } catch (e) {
+                targetBranch = "main";
+              }
 
-            if (commentBody) {
-              const commentJsonMatch = commentBody.match(/```json\n([\s\S]*?)\n```/);
-              if (commentJsonMatch) {
+              let extractedModel = "";
+              let existingPrUrl = "";
+              let existingPrBranch = "";
+              let lastSha = "";
+              let attachmentsJson = "";
+              let skillsJson = "";
+              let cleanIssueBody = issueBody;
+              let cleanCommentBody = commentBody;
+
+              const jsonMatch = issueBody.match(/```json\n([\s\S]*?)\n```/);
+              if (jsonMatch) {
                 try {
-                  const commentMeta = JSON.parse(commentJsonMatch[1]);
-                  if (commentMeta.model) extractedModel = commentMeta.model.trim();
-                  if (commentMeta.attachments) {
-                    attachmentsJson = Array.isArray(commentMeta.attachments) ? commentMeta.attachments.join(", ") : attachmentsJson;
+                  const meta = JSON.parse(jsonMatch[1]);
+                  if (meta.repository) targetRepo = meta.repository.trim();
+                  if (meta.branch) targetBranch = meta.branch.trim();
+                  if (meta.model) extractedModel = meta.model.trim();
+                  if (meta.pr_url) existingPrUrl = meta.pr_url.trim();
+                  if (meta.pr_branch) existingPrBranch = meta.pr_branch.trim();
+                  if (meta.sha) lastSha = meta.sha.trim();
+                  if (meta.attachments) {
+                    attachmentsJson = Array.isArray(meta.attachments) ? meta.attachments.join(", ") : "";
                   }
-                  if (commentMeta.skills) {
-                    skillsJson = Array.isArray(commentMeta.skills) ? commentMeta.skills.join(", ") : skillsJson;
+                  if (meta.skills) {
+                    skillsJson = Array.isArray(meta.skills) ? meta.skills.join(", ") : "";
                   }
                 } catch(e) {}
-                cleanCommentBody = commentBody.replace(commentJsonMatch[0], "");
+                cleanIssueBody = issueBody.replace(jsonMatch[0], "");
               }
-              
-              const oldModelMatch = cleanCommentBody.match(/(?<=\{model:)[^,\}]+/);
-              if (oldModelMatch) {
-                extractedModel = oldModelMatch[0].trim();
-              }
-              cleanCommentBody = cleanCommentBody.replace(/^\s*\/agy\s*/i, "").replace(/\{model:[^\\}]*\}\s*/i, "");
-            }
 
-            let isFirstRun = !commentBody;
-            let newCommits = false;
-            let prBranchExists = false;
-            let prMerged = false;
-            let prBranchDeleted = false;
-
-            if (existingPrUrl) {
-              try {
-                const state = execSync(`gh pr view "${existingPrUrl}" --json state --jq .state`).toString().trim();
-                if (state === "MERGED") {
-                  prMerged = true;
+              if (commentBody) {
+                const commentJsonMatch = commentBody.match(/```json\n([\s\S]*?)\n```/);
+                if (commentJsonMatch) {
+                  try {
+                    const commentMeta = JSON.parse(commentJsonMatch[1]);
+                    if (commentMeta.model) extractedModel = commentMeta.model.trim();
+                    if (commentMeta.attachments) {
+                      attachmentsJson = Array.isArray(commentMeta.attachments) ? commentMeta.attachments.join(", ") : attachmentsJson;
+                    }
+                    if (commentMeta.skills) {
+                      skillsJson = Array.isArray(commentMeta.skills) ? commentMeta.skills.join(", ") : skillsJson;
+                    }
+                  } catch(e) {}
+                  cleanCommentBody = commentBody.replace(commentJsonMatch[0], "");
                 }
-              } catch(e) {}
-            }
 
-            if (existingPrBranch) {
-              try {
-                execSync(`gh api repos/${targetRepo}/branches/${existingPrBranch}`);
-                targetBranch = existingPrBranch;
-                prBranchExists = true;
-              } catch(e) {
-                prBranchDeleted = true;
+                const oldModelMatch = cleanCommentBody.match(/(?<=\{model:)[^,\}]+/);
+                if (oldModelMatch) {
+                  extractedModel = oldModelMatch[0].trim();
+                }
+                cleanCommentBody = cleanCommentBody.replace(/^\s*\/agy\s*/i, "").replace(/\{model:[^\\}]*\}\s*/i, "");
               }
-            }
 
-            fs.writeFileSync("/tmp/agy_clean_issue_body.txt", cleanIssueBody);
-            fs.writeFileSync("/tmp/agy_clean_comment_body.txt", cleanCommentBody);
+              let isFirstRun = !commentBody;
+              let newCommits = false;
+              let prBranchExists = false;
+              let prMerged = false;
+              let prBranchDeleted = false;
 
-            let currentSha = "";
-            try {
-              currentSha = execSync(`gh api repos/${targetRepo}/commits/${targetBranch} --jq .sha`).toString().trim();
-            } catch(e) {}
+              if (existingPrUrl) {
+                try {
+                  const state = execSync(`gh pr view "${existingPrUrl}" --json state --jq .state`).toString().trim();
+                  if (state === "MERGED") {
+                    prMerged = true;
+                  }
+                } catch(e) {}
+              }
 
-            if (lastSha && !isFirstRun && currentSha && currentSha !== lastSha) {
-              newCommits = true;
-            }
+              if (existingPrBranch) {
+                try {
+                  execSync(`gh api repos/${targetRepo}/branches/${existingPrBranch}`);
+                  targetBranch = existingPrBranch;
+                  prBranchExists = true;
+                } catch(e) {
+                  prBranchDeleted = true;
+                }
+              }
 
-            const envVars = {
-              TARGET_REPO: targetRepo,
-              TARGET_BRANCH: targetBranch,
-              IS_FIRST_RUN: isFirstRun.toString(),
-              PR_BRANCH_EXISTS: prBranchExists.toString(),
-              PR_MERGED: prMerged.toString(),
-              PR_BRANCH_DELETED: prBranchDeleted.toString(),
-              EXISTING_PR_URL: existingPrUrl,
-              EXISTING_PR_BRANCH: existingPrBranch,
-              EXTRACTED_MODEL: extractedModel,
-              LAST_SHA: lastSha,
-              ATTACHMENTS_JSON: attachmentsJson,
-              SKILLS_JSON: skillsJson,
-              CURRENT_SHA: currentSha,
-              NEW_COMMITS: newCommits.toString()
-            };
+              fs.writeFileSync("/tmp/agy_clean_issue_body.txt", cleanIssueBody);
+              fs.writeFileSync("/tmp/agy_clean_comment_body.txt", cleanCommentBody);
 
-            let envContent = "";
-            for (const [key, value] of Object.entries(envVars)) {
-              const escapedValue = String(value).replace(/"/g, "\\\"");
-              envContent += `${key}="${escapedValue}"\n`;
-            }
-            if (fs.existsSync("/tmp/agy_context.env")) {
-              envContent = fs.readFileSync("/tmp/agy_context.env", "utf8") + "\n" + envContent;
-            }
-            fs.writeFileSync("/tmp/agy_context.env", envContent);
-          '
+              let currentSha = "";
+              try {
+                currentSha = execSync(`gh api repos/${targetRepo}/commits/${targetBranch} --jq .sha`).toString().trim();
+              } catch(e) {}
+
+              if (lastSha && !isFirstRun && currentSha && currentSha !== lastSha) {
+                newCommits = true;
+              }
+
+              const envVars = {
+                TARGET_REPO: targetRepo,
+                TARGET_BRANCH: targetBranch,
+                IS_FIRST_RUN: isFirstRun.toString(),
+                PR_BRANCH_EXISTS: prBranchExists.toString(),
+                PR_MERGED: prMerged.toString(),
+                PR_BRANCH_DELETED: prBranchDeleted.toString(),
+                EXISTING_PR_URL: existingPrUrl,
+                EXISTING_PR_BRANCH: existingPrBranch,
+                EXTRACTED_MODEL: extractedModel,
+                LAST_SHA: lastSha,
+                ATTACHMENTS_JSON: attachmentsJson,
+                SKILLS_JSON: skillsJson,
+                CURRENT_SHA: currentSha,
+                NEW_COMMITS: newCommits.toString()
+              };
+
+              // Write to a SEPARATE file (not /tmp/agy_context.env) to avoid
+              // racing with the parallel Sparse-checkout step. We concat them
+              // after `wait` below.
+              let envContent = "";
+              for (const [key, value] of Object.entries(envVars)) {
+                const escapedValue = String(value).replace(/"/g, "\\"");
+                envContent += `${key}="${escapedValue}"\n`;
+              }
+              fs.writeFileSync("/tmp/agy_context_target.env", envContent);
+            '
+          ) 2>"$LOG_DIR/determine_target.err" &
+          TARGET_PID=$!
+
+          # Wait for both. If either failed, print its stderr log and exit.
+          FAIL=0
+          if ! wait $SPARSE_PID; then
+            echo "=== Sparse-checkout memory branch failed ===" >&2
+            cat "$LOG_DIR/sparse_checkout.err" >&2
+            FAIL=1
+          fi
+          if ! wait $TARGET_PID; then
+            echo "=== Determine Target Repo & Branch failed ===" >&2
+            cat "$LOG_DIR/determine_target.err" >&2
+            FAIL=1
+          fi
+          if [ $FAIL -ne 0 ]; then exit 1; fi
+
+          # Merge the two env files. Order doesn't matter — keys are unique.
+          # /tmp/agy_context.env already has Sparse-checkout's keys (REPO,
+          # REPO_ID, ISSUE_NUMBER, MEMORY_EXISTS, AGY_CONVERSATION_ID).
+          # Append Determine's keys (TARGET_REPO, TARGET_BRANCH, etc.).
+          if [ -f /tmp/agy_context_target.env ]; then
+            cat /tmp/agy_context_target.env >> /tmp/agy_context.env
+            rm /tmp/agy_context_target.env
+          fi
 
       - name: Clone Target Repository
         run: |
@@ -1031,94 +1108,127 @@ jobs:
             ~/Agent-Workspace/.npm-global
           key: agent-packages-issue-${{ steps.cache-key-gen.outputs.hash }}-${{ steps.packages-hash.outputs.hash }}
 
-      - name: Update Limits and Usages
-        if: always()
-        run: |
-          mkdir -p ~/.gemini/antigravity-cli
-          echo '${{ secrets.AGY_OAUTH_TOKEN }}' > ~/.gemini/antigravity-cli/antigravity-oauth-token
-          python3 ./agy-defaults/get_usages.py > /dev/null 2>&1 || true
-          git add ./agy-defaults/settings.json > /dev/null 2>&1 || true
-          git commit -m "chore: update usages and limits [skip ci]" > /dev/null 2>&1 || true
-          git pull --rebase origin main > /dev/null 2>&1 || true
-          git push origin HEAD > /dev/null 2>&1 || true
-
-      - name: Mark Issue as Finished
+      - name: Update Limits + Mark Issue as Finished (parallel)
         if: always()
         env:
           GH_TOKEN: ${{ github.event.client_payload.gh_token || secrets.GH_TOKEN || secrets.PAT || secrets.GITHUB_TOKEN }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          set -a; [ -f /tmp/agy_context.env ] && . /tmp/agy_context.env; set +a
-          
-          REASON=""
-          if [ "$JOB_STATUS" = "failure" ]; then
-            REASON="Action failed. Check logs."
-            if [ "$auth_failed" = "true" ]; then REASON="Auth token expired"; fi
-            if [ "$quota_reached" = "true" ]; then REASON="Quota reached"; fi
-          fi
-          export REASON
-          
-          gh api repos/$REPO/issues/$ISSUE_NUMBER --jq .body > issue_body.txt 2>/dev/null || exit 0
-          
-          node -e '
-            const fs = require("fs");
-            const execSync = require("child_process").execSync;
-            let body = fs.readFileSync("issue_body.txt", "utf8");
+          # Run two independent post-run cleanup steps concurrently:
+          #   1. Update Limits and Usages  (git commit + push to runner repo, ~1s)
+          #   2. Mark Issue as Finished    (multiple gh api calls to target issue, ~1-2s)
+          # Before: ~1s + ~2s = ~3s sequential
+          # After:  max(~1s, ~2s) = ~2s parallel
+          #
+          # Truly independent: Update Limits writes to the runner repo (git push),
+          # Mark Issue writes to the target repo's issue (gh api). No shared files,
+          # no shared state. Both original steps used 'if: always()' with
+          # '|| true' / '|| exit 0' guards, so we preserve that: cleanup failures
+          # in one branch don't block or fail the other.
+          set +e
+          LOG_DIR=$(mktemp -d)
 
-            // Clean up any remaining <Working> tag
-            const workingRegex = /<Working>([\s\S]*?)<\/Working>/;
-            if (workingRegex.test(body)) {
-              body = body.replace(workingRegex, "").trim();
-            }
+          # 1. Update Limits and Usages (backgrounded) — git work on runner repo
+          (
+            mkdir -p ~/.gemini/antigravity-cli
+            echo '${{ secrets.AGY_OAUTH_TOKEN }}' > ~/.gemini/antigravity-cli/antigravity-oauth-token
+            python3 ./agy-defaults/get_usages.py > /dev/null 2>&1 || true
+            git add ./agy-defaults/settings.json > /dev/null 2>&1 || true
+            git commit -m "chore: update usages and limits [skip ci]" > /dev/null 2>&1 || true
+            git pull --rebase origin main > /dev/null 2>&1 || true
+            git push origin HEAD > /dev/null 2>&1 || true
+          ) 2>"$LOG_DIR/update_limits.err" &
+          LIMITS_PID=$!
 
-            const jobStatus = (process.env.JOB_STATUS || "unknown").toLowerCase();
-            const reason = process.env.REASON || "";
-            
-            let jsonMatch = body.match(/```json\n([\s\S]*?)\n```/);
-            let meta = {};
-            let hasJson = false;
-            if (jsonMatch) {
-              try { meta = JSON.parse(jsonMatch[1]); hasJson = true; } catch(e) {}
-            }
-            
-            if (jobStatus === "success") {
-              meta.status = "success";
-            } else if (jobStatus === "cancelled") {
-              meta.status = "stopped";
-            } else {
-              meta.status = "failed";
-              meta.reason = reason;
-            }
-            
-            try {
-              const targetRepo = process.env.TARGET_REPO || process.env.REPO;
-              let defaultBranch = execSync(`gh api repos/${targetRepo} --jq .default_branch`).toString().trim();
-              let finalBranch = defaultBranch;
-              
-              if (meta.pr_branch) {
-                try {
-                  execSync(`gh api repos/${targetRepo}/branches/${meta.pr_branch}`);
-                  finalBranch = meta.pr_branch;
-                } catch(e) {
-                  if (meta.branch) finalBranch = meta.branch;
-                }
-              } else if (meta.branch) {
-                finalBranch = meta.branch;
+          # 2. Mark Issue as Finished (backgrounded) — gh api calls to target issue
+          (
+            set -a; [ -f /tmp/agy_context.env ] && . /tmp/agy_context.env; set +a
+
+            REASON=""
+            if [ "$JOB_STATUS" = "failure" ]; then
+              REASON="Action failed. Check logs."
+              if [ "$auth_failed" = "true" ]; then REASON="Auth token expired"; fi
+              if [ "$quota_reached" = "true" ]; then REASON="Quota reached"; fi
+            fi
+            export REASON
+
+            gh api repos/$REPO/issues/$ISSUE_NUMBER --jq .body > issue_body.txt 2>/dev/null || exit 0
+
+            node -e '
+              const fs = require("fs");
+              const execSync = require("child_process").execSync;
+              let body = fs.readFileSync("issue_body.txt", "utf8");
+
+              // Clean up any remaining <Working> tag
+              const workingRegex = /<Working>([\s\S]*?)<\/Working>/;
+              if (workingRegex.test(body)) {
+                body = body.replace(workingRegex, "").trim();
               }
-              
-              meta.sha = execSync(`gh api repos/${targetRepo}/commits/${finalBranch} --jq .sha`).toString().trim();
-            } catch(e) {
-              console.error("Failed to fetch latest SHA:", e.message);
-            }
-            
-            if (hasJson) {
-              body = body.replace(jsonMatch[0], "```json\n" + JSON.stringify(meta, null, 2) + "\n```");
-            } else {
-              body = "```json\n" + JSON.stringify(meta, null, 2) + "\n```\n\n" + body;
-            }
-            fs.writeFileSync("new_body.txt", body);
-          '
-          gh issue edit $ISSUE_NUMBER --repo $REPO --body-file new_body.txt >/dev/null 2>&1 || exit 0
+
+              const jobStatus = (process.env.JOB_STATUS || "unknown").toLowerCase();
+              const reason = process.env.REASON || "";
+
+              let jsonMatch = body.match(/```json\n([\s\S]*?)\n```/);
+              let meta = {};
+              let hasJson = false;
+              if (jsonMatch) {
+                try { meta = JSON.parse(jsonMatch[1]); hasJson = true; } catch(e) {}
+              }
+
+              if (jobStatus === "success") {
+                meta.status = "success";
+              } else if (jobStatus === "cancelled") {
+                meta.status = "stopped";
+              } else {
+                meta.status = "failed";
+                meta.reason = reason;
+              }
+
+              try {
+                const targetRepo = process.env.TARGET_REPO || process.env.REPO;
+                let defaultBranch = execSync(`gh api repos/${targetRepo} --jq .default_branch`).toString().trim();
+                let finalBranch = defaultBranch;
+
+                if (meta.pr_branch) {
+                  try {
+                    execSync(`gh api repos/${targetRepo}/branches/${meta.pr_branch}`);
+                    finalBranch = meta.pr_branch;
+                  } catch(e) {
+                    if (meta.branch) finalBranch = meta.branch;
+                  }
+                } else if (meta.branch) {
+                  finalBranch = meta.branch;
+                }
+
+                meta.sha = execSync(`gh api repos/${targetRepo}/commits/${finalBranch} --jq .sha`).toString().trim();
+              } catch(e) {
+                console.error("Failed to fetch latest SHA:", e.message);
+              }
+
+              if (hasJson) {
+                body = body.replace(jsonMatch[0], "```json\n" + JSON.stringify(meta, null, 2) + "\n```");
+              } else {
+                body = "```json\n" + JSON.stringify(meta, null, 2) + "\n```\n\n" + body;
+              }
+              fs.writeFileSync("new_body.txt", body);
+            '
+            gh issue edit $ISSUE_NUMBER --repo $REPO --body-file new_body.txt >/dev/null 2>&1 || exit 0
+          ) 2>"$LOG_DIR/mark_issue.err" &
+          MARK_PID=$!
+
+          # Wait for both. Don't fail the step if either fails — both original
+          # steps used 'if: always()' and had '|| true' / '|| exit 0' guards,
+          # meaning cleanup failures should not propagate. We just log them.
+          wait $LIMITS_PID || echo "Update Limits: non-zero exit (may be expected)"
+          wait $MARK_PID || echo "Mark Issue as Finished: non-zero exit (may be expected)"
+
+          # If either wrote anything to stderr, surface it for debugging.
+          for f in "$LOG_DIR"/*.err; do
+            if [ -s "$f" ]; then
+              echo "--- $f ---"
+              cat "$f"
+            fi
+          done
 
       - name: Auto-Update Runner Repo
         if: always()
