@@ -142,12 +142,12 @@ jobs:
         if: steps.cache-agy.outputs.cache-hit != 'true'
         run: |
           curl -sSL https://antigravity.google/cli/install.sh | bash > /dev/null 2>&1
-          
+
       - name: Install Context Compressors
         run: |
-          pip install "headroom-ai[all]"
+          pipx install "headroom-ai[all]"
           npm install -g rtk-ai
-          
+
       - name: Add agy to PATH
         run: echo "$HOME/.local/bin" >> $GITHUB_PATH
 
