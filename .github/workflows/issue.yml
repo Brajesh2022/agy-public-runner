@@ -660,7 +660,13 @@ jobs:
             }
             
             if (skillsStr && skillsStr.trim() !== "") {
-              systemContext += `- The user wants you to use the following skills for this task: ${skillsStr}.\n`;
+              systemContext += `- The user wants you to use the following skills for this task:\n`;
+              skillsStr.split(",").forEach(s => {
+                const name = s.trim();
+                if (name) {
+                  systemContext += `  - Agent skill: '${name}' (already installed, its SKILL.md is at file:///home/runner/.gemini/antigravity-cli/skills/${name}/SKILL.md)\n`;
+                }
+              });
             }
             
             if (memoryExists) {
