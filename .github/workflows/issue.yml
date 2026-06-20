@@ -129,7 +129,10 @@ jobs:
 
       - name: Get current date for cache
         id: date
-        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+        run: |
+          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          # ISO week number — matches the key used by build-compressor-cache.yml.
+          echo "week=$(date +'%Y-W%V')" >> $GITHUB_OUTPUT
 
       - name: Cache Antigravity CLI
         id: cache-agy
@@ -138,44 +141,52 @@ jobs:
           path: ~/.local/bin/agy
           key: agy-cli-linux-${{ steps.date.outputs.date }}
 
-      - name: Cache pip downloads for headroom
-        uses: actions/cache@v4
+      - name: Restore compressor cache (headroom + rtk + uv)
+        id: cache-compressors
+        uses: actions/cache/restore@v4
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-headroom-mcp-code-${{ steps.date.outputs.date }}
+          # Cache is built weekly by .github/workflows/build-compressor-cache.yml
+          # (or frontend/public/runner-template/build-compressor-cache.yml when
+          # this template is copied into a runner repo). This workflow only
+          # restores; it never writes the cache.
+          path: |
+            ~/.local/share/headroom-venv
+            ~/.local/bin/headroom
+            ~/.local/bin/rtk
+            ~/.local/bin/uv
+            ~/.cache/uv
+          key: compressors-linux-${{ steps.date.outputs.week }}
+          # Fall back to last week's cache if this week's isn't built yet.
           restore-keys: |
-            ${{ runner.os }}-pip-headroom-mcp-code-
-
-      - name: Cache RTK binary
-        id: cache-rtk
-        uses: actions/cache@v4
-        with:
-          path: ~/.local/bin/rtk
-          key: rtk-linux-${{ steps.date.outputs.date }}
-          restore-keys: |
-            rtk-linux-
+            compressors-linux-
 
       - name: Install agy
         if: steps.cache-agy.outputs.cache-hit != 'true'
         run: |
           curl -sSL https://antigravity.google/cli/install.sh | bash > /dev/null 2>&1
 
-      - name: Install Context Compressors
+      - name: Install Context Compressors (fallback when cache misses)
+        if: steps.cache-compressors.outputs.cache-hit != 'true'
         run: |
-          # Install only the MCP server + code compressor extras.
-          # `mcp` registers headroom_compress / headroom_retrieve / headroom_stats as MCP tools.
-          # `code` adds AST-aware CodeCompressor (tree-sitter-language-pack, ~50 MB)
-          # for 40-70% savings on source-file reads vs the 30-50% TextCompressor fallback.
-          # Skipping `[all]` avoids pulling ~500+ MB of unneeded ML/eval/image deps.
-          # --prefer-binary forces pip to pick prebuilt wheels over source builds,
-          # skipping Rust/C++ compilation of native extensions.
-          pipx install --pip-args="--prefer-binary" "headroom-ai[mcp,code]"
+          # This step only runs when the weekly cache is missing (e.g. the
+          # scheduled build job failed, or it's the very first run ever).
+          # Normal runs skip this entirely — cache restore is ~2-3s.
+          #
+          # Uses uv (Rust pip replacement) for ~5-8s cold install vs ~15s
+          # with pip. uv installs in parallel + uses a global wheel cache.
+          set -e
+          if [ ! -x "$HOME/.local/bin/uv" ]; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+          fi
+          "$HOME/.local/bin/uv" venv ~/.local/share/headroom-venv
+          "$HOME/.local/bin/uv" pip install \
+            --python ~/.local/share/headroom-venv/bin/python \
+            "headroom-ai[mcp,code]"
+          mkdir -p ~/.local/bin
+          ln -sf ~/.local/share/headroom-venv/bin/headroom ~/.local/bin/headroom
 
-          # RTK (Rust Token Killer, github.com/rtk-ai/rtk) — single Rust binary.
-          # The "rtk-ai" npm package does NOT exist; install via the official curl
-          # installer. Skipped on cache hit. Installs to ~/.local/bin, which the
-          # next step below adds to $GITHUB_PATH.
-          if [ "${{ steps.cache-rtk.outputs.cache-hit }}" != "true" ]; then
+          # RTK — single Rust binary via official curl installer.
+          if [ ! -x "$HOME/.local/bin/rtk" ]; then
             curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
           fi
 
