@@ -167,11 +167,15 @@ jobs:
           ( curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh 2>"$LOG_DIR/rtk.err" | sh ) &
           RTK_PID=$!
 
-          # 3. agy-skeleton + agy-tree — local Python scripts shipped with the
-          # runner-template. Just copy + chmod. No download needed.
+          # 3. agy-skeleton + agy-tree + agy-grep + agy-fmt + agy-test —
+          # local Python/bash scripts shipped with the runner-template.
+          # Just copy + chmod. No download needed.
           ( cp ./agy-defaults/bin/agy-skeleton "$HOME/.local/bin/agy-skeleton"
             cp ./agy-defaults/bin/agy-tree "$HOME/.local/bin/agy-tree"
-            chmod +x "$HOME/.local/bin/agy-skeleton" "$HOME/.local/bin/agy-tree" ) &
+            cp ./agy-defaults/bin/agy-grep "$HOME/.local/bin/agy-grep"
+            cp ./agy-defaults/bin/agy-fmt "$HOME/.local/bin/agy-fmt"
+            cp ./agy-defaults/bin/agy-test "$HOME/.local/bin/agy-test"
+            chmod +x "$HOME/.local/bin/agy-skeleton" "$HOME/.local/bin/agy-tree" "$HOME/.local/bin/agy-grep" "$HOME/.local/bin/agy-fmt" "$HOME/.local/bin/agy-test" ) &
           TOOLS_PID=$!
 
           # Wait for all background installs to finish. If any failed,
