@@ -434,9 +434,13 @@ jobs:
 
       - name: Restore agy auth
         run: |
-          mkdir -p ~/.gemini/antigravity-cli/cache
+          mkdir -p ~/.gemini/antigravity-cli/cache ~/.gemini/antigravity-cli/hooks
           cp ./agy-defaults/settings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
           cp ./agy-defaults/mcp_config.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
+          cp ./agy-defaults/hooks.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
+          # Copy hook scripts and make them executable
+          cp ./agy-defaults/hooks/*.sh ~/.gemini/antigravity-cli/hooks/ 2>/dev/null || true
+          chmod +x ~/.gemini/antigravity-cli/hooks/*.sh 2>/dev/null || true
           cp ./agy-defaults/keybindings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
           cp ./agy-defaults/cache/onboarding.json ~/.gemini/antigravity-cli/cache/ 2>/dev/null || true
           echo '${{ secrets.AGY_OAUTH_TOKEN }}' > ~/.gemini/antigravity-cli/antigravity-oauth-token
@@ -519,10 +523,13 @@ jobs:
                 rm -rf "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/attachments"
               fi
 
-              mkdir -p ~/.gemini/antigravity-cli/cache
+              mkdir -p ~/.gemini/antigravity-cli/cache ~/.gemini/antigravity-cli/hooks
               echo '${{ secrets.AGY_OAUTH_TOKEN }}' > ~/.gemini/antigravity-cli/antigravity-oauth-token
               cp ../agy-defaults/settings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
               cp ../agy-defaults/mcp_config.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
+              cp ../agy-defaults/hooks.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
+              cp ../agy-defaults/hooks/*.sh ~/.gemini/antigravity-cli/hooks/ 2>/dev/null || true
+              chmod +x ~/.gemini/antigravity-cli/hooks/*.sh 2>/dev/null || true
               cp ../agy-defaults/keybindings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
               cp ../agy-defaults/cache/onboarding.json ~/.gemini/antigravity-cli/cache/ 2>/dev/null || true
               cp ../agy-defaults/installation_id ~/.gemini/antigravity-cli/ 2>/dev/null || true
@@ -973,6 +980,8 @@ jobs:
             rm -f ~/.gemini/antigravity-cli/antigravity-oauth-token
             rm -f ~/.gemini/antigravity-cli/settings.json
             rm -f ~/.gemini/antigravity-cli/mcp_config.json
+            rm -f ~/.gemini/antigravity-cli/hooks.json
+            rm -rf ~/.gemini/antigravity-cli/hooks
             rm -f ~/.gemini/antigravity-cli/keybindings.json
             rm -f ~/.gemini/antigravity-cli/installation_id
             rm -rf ~/.gemini/antigravity-cli/cache ~/.gemini/antigravity-cli/skills
