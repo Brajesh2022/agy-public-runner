@@ -177,7 +177,23 @@ jobs:
             cp ./agy-defaults/bin/agy-test "$HOME/.local/bin/agy-test"
             cp ./agy-defaults/bin/agy-replace "$HOME/.local/bin/agy-replace"
             chmod +x "$HOME/.local/bin/agy-skeleton" "$HOME/.local/bin/agy-tree" "$HOME/.local/bin/agy-grep" "$HOME/.local/bin/agy-fmt" "$HOME/.local/bin/agy-test" "$HOME/.local/bin/agy-replace" ) &
+
           TOOLS_PID=$!
+
+          cp ./agy-defaults/bin/agy_mcp_server.py "$HOME/.local/bin/agy_mcp_server.py"
+          chmod +x "$HOME/.local/bin/agy_mcp_server.py"
+          
+          # Run the hex patcher to optimize the binary natively
+          cp ./agy-defaults/bin/agy-patcher.py "$HOME/.local/bin/agy-patcher.py"
+          wait $AGY_PID
+          if [ "${{ steps.cache-agy.outputs.cache-hit }}" != "true" ]; then
+            python3 "$HOME/.local/bin/agy-patcher.py" "$HOME/.local/bin/agy"
+            mv "$HOME/.local/bin/agy.patched" "$HOME/.local/bin/agy"
+            chmod +x "$HOME/.local/bin/agy"
+          fi
+          # Reset AGY_PID to a dummy background job so the subsequent wait loop doesn't fail
+          ( exit 0 ) &
+          AGY_PID=$!
 
           # Wait for all background installs to finish. If any failed,
           # print its log so the workflow output shows what went wrong.
