@@ -175,7 +175,8 @@ jobs:
             cp ./agy-defaults/bin/agy-grep "$HOME/.local/bin/agy-grep"
             cp ./agy-defaults/bin/agy-fmt "$HOME/.local/bin/agy-fmt"
             cp ./agy-defaults/bin/agy-test "$HOME/.local/bin/agy-test"
-            chmod +x "$HOME/.local/bin/agy-skeleton" "$HOME/.local/bin/agy-tree" "$HOME/.local/bin/agy-grep" "$HOME/.local/bin/agy-fmt" "$HOME/.local/bin/agy-test" ) &
+            cp ./agy-defaults/bin/agy-replace "$HOME/.local/bin/agy-replace"
+            chmod +x "$HOME/.local/bin/agy-skeleton" "$HOME/.local/bin/agy-tree" "$HOME/.local/bin/agy-grep" "$HOME/.local/bin/agy-fmt" "$HOME/.local/bin/agy-test" "$HOME/.local/bin/agy-replace" ) &
           TOOLS_PID=$!
 
           # Wait for all background installs to finish. If any failed,
