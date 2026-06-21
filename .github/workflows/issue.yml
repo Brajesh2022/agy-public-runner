@@ -138,16 +138,19 @@ jobs:
           path: ~/.local/bin/agy
           key: agy-cli-linux-${{ steps.date.outputs.date }}
 
-      - name: Install agy + headroom + rtk (parallel)
+      - name: Install agy + rtk + agy-skeleton + agy-tree (parallel)
         run: |
-          # Run all 3 installs concurrently in the background. Each writes
+          # Run all installs concurrently in the background. Each writes
           # to a separate log file. We then `wait` for all of them.
           #
-          # Without parallelism: agy (~3s) + uv+headroom (~3s) + rtk (~1s) = ~7s
-          # With parallelism:    max(agy ~3s, headroom ~3s, rtk ~1s)   = ~3-4s
+          # Without parallelism: agy (~3s) + rtk (~1s) + tools (~0s) = ~4s
+          # With parallelism:    max(agy ~3s, rtk ~1s, tools ~0s)   = ~3s
           #
-          # GitHub Actions runs steps sequentially but a single run: block
-          # can background shell processes and wait on them.
+          # Note: headroom was removed — it was 70 MB of venv + tree-sitter
+          # grammars that AGY explicitly didn't want ("lossy by design, I
+          # wouldn't be able to safely write a patch"). Replaced with
+          # agy-skeleton (AST-based, deterministic, lossless) + agy-tree
+          # (directory listing with .gitignore-aware filtering).
           set -e
           mkdir -p "$HOME/.local/bin" "$HOME/.local/share"
           LOG_DIR=$(mktemp -d)
@@ -160,23 +163,21 @@ jobs:
           fi
           AGY_PID=$!
 
-          # 2. headroom venv via uv (~3s on cold cache, ~1s with uv's wheel cache)
-          ( curl -LsSf https://astral.sh/uv/install.sh 2>"$LOG_DIR/uv.err" | sh
-            "$HOME/.local/bin/uv" venv "$HOME/.local/share/headroom-venv" 2>"$LOG_DIR/venv.err"
-            "$HOME/.local/bin/uv" pip install \
-              --python "$HOME/.local/share/headroom-venv/bin/python" \
-              "headroom-ai[mcp,code]" 2>"$LOG_DIR/headroom.err"
-            ln -sf "$HOME/.local/share/headroom-venv/bin/headroom" "$HOME/.local/bin/headroom" ) &
-          HEADROOM_PID=$!
-
-          # 3. RTK (single Rust binary, ~1s)
+          # 2. RTK (single Rust binary, ~1s)
           ( curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh 2>"$LOG_DIR/rtk.err" | sh ) &
           RTK_PID=$!
+
+          # 3. agy-skeleton + agy-tree — local Python scripts shipped with the
+          # runner-template. Just copy + chmod. No download needed.
+          ( cp ./agy-defaults/bin/agy-skeleton "$HOME/.local/bin/agy-skeleton"
+            cp ./agy-defaults/bin/agy-tree "$HOME/.local/bin/agy-tree"
+            chmod +x "$HOME/.local/bin/agy-skeleton" "$HOME/.local/bin/agy-tree" ) &
+          TOOLS_PID=$!
 
           # Wait for all background installs to finish. If any failed,
           # print its log so the workflow output shows what went wrong.
           FAIL=0
-          for pid in $AGY_PID $HEADROOM_PID $RTK_PID; do
+          for pid in $AGY_PID $RTK_PID $TOOLS_PID; do
             if ! wait $pid; then
               FAIL=1
             fi
@@ -434,13 +435,15 @@ jobs:
 
       - name: Restore agy auth
         run: |
-          mkdir -p ~/.gemini/antigravity-cli/cache ~/.gemini/antigravity-cli/hooks
+          mkdir -p ~/.gemini/antigravity-cli/cache ~/.gemini/config/hooks
           cp ./agy-defaults/settings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
           cp ./agy-defaults/mcp_config.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
-          cp ./agy-defaults/hooks.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
-          # Copy hook scripts and make them executable
-          cp ./agy-defaults/hooks/*.sh ~/.gemini/antigravity-cli/hooks/ 2>/dev/null || true
-          chmod +x ~/.gemini/antigravity-cli/hooks/*.sh 2>/dev/null || true
+          # Hooks: copy hooks.json to ~/.gemini/config/ (Antigravity's actual
+          # hooks config location per official docs) and hook scripts to
+          # ~/.gemini/config/hooks/.
+          cp ./agy-defaults/hooks.json ~/.gemini/config/hooks.json 2>/dev/null || true
+          cp ./agy-defaults/hooks/*.sh ~/.gemini/config/hooks/ 2>/dev/null || true
+          chmod +x ~/.gemini/config/hooks/*.sh 2>/dev/null || true
           cp ./agy-defaults/keybindings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
           cp ./agy-defaults/cache/onboarding.json ~/.gemini/antigravity-cli/cache/ 2>/dev/null || true
           echo '${{ secrets.AGY_OAUTH_TOKEN }}' > ~/.gemini/antigravity-cli/antigravity-oauth-token
@@ -523,13 +526,13 @@ jobs:
                 rm -rf "repo-${REPO_ID}/issue-${ISSUE_NUMBER}/attachments"
               fi
 
-              mkdir -p ~/.gemini/antigravity-cli/cache ~/.gemini/antigravity-cli/hooks
+              mkdir -p ~/.gemini/antigravity-cli/cache ~/.gemini/config/hooks
               echo '${{ secrets.AGY_OAUTH_TOKEN }}' > ~/.gemini/antigravity-cli/antigravity-oauth-token
               cp ../agy-defaults/settings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
               cp ../agy-defaults/mcp_config.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
-              cp ../agy-defaults/hooks.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
-              cp ../agy-defaults/hooks/*.sh ~/.gemini/antigravity-cli/hooks/ 2>/dev/null || true
-              chmod +x ~/.gemini/antigravity-cli/hooks/*.sh 2>/dev/null || true
+              cp ../agy-defaults/hooks.json ~/.gemini/config/hooks.json 2>/dev/null || true
+              cp ../agy-defaults/hooks/*.sh ~/.gemini/config/hooks/ 2>/dev/null || true
+              chmod +x ~/.gemini/config/hooks/*.sh 2>/dev/null || true
               cp ../agy-defaults/keybindings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
               cp ../agy-defaults/cache/onboarding.json ~/.gemini/antigravity-cli/cache/ 2>/dev/null || true
               cp ../agy-defaults/installation_id ~/.gemini/antigravity-cli/ 2>/dev/null || true
@@ -980,8 +983,8 @@ jobs:
             rm -f ~/.gemini/antigravity-cli/antigravity-oauth-token
             rm -f ~/.gemini/antigravity-cli/settings.json
             rm -f ~/.gemini/antigravity-cli/mcp_config.json
-            rm -f ~/.gemini/antigravity-cli/hooks.json
-            rm -rf ~/.gemini/antigravity-cli/hooks
+            rm -f ~/.gemini/config/hooks.json
+            rm -rf ~/.gemini/config/hooks
             rm -f ~/.gemini/antigravity-cli/keybindings.json
             rm -f ~/.gemini/antigravity-cli/installation_id
             rm -rf ~/.gemini/antigravity-cli/cache ~/.gemini/antigravity-cli/skills
