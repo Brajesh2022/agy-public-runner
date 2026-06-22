@@ -167,27 +167,14 @@ jobs:
           ( curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh 2>"$LOG_DIR/rtk.err" | sh ) &
           RTK_PID=$!
 
-          # 3. agy-skeleton + agy-tree + agy-grep + agy-fmt + agy-test —
-          # local Python/bash scripts shipped with the runner-template.
-          # Just copy + chmod. No download needed.
-          ( cp ./agy-defaults/bin/agy-skeleton "$HOME/.local/bin/agy-skeleton"
-            cp ./agy-defaults/bin/agy-tree "$HOME/.local/bin/agy-tree"
-            cp ./agy-defaults/bin/agy-grep "$HOME/.local/bin/agy-grep"
-            cp ./agy-defaults/bin/agy-fmt "$HOME/.local/bin/agy-fmt"
-            cp ./agy-defaults/bin/agy-test "$HOME/.local/bin/agy-test"
-            cp ./agy-defaults/bin/agy-replace "$HOME/.local/bin/agy-replace"
-            chmod +x "$HOME/.local/bin/agy-skeleton" "$HOME/.local/bin/agy-tree" "$HOME/.local/bin/agy-grep" "$HOME/.local/bin/agy-fmt" "$HOME/.local/bin/agy-test" "$HOME/.local/bin/agy-replace" ) &
-
-          TOOLS_PID=$!
+          # 3. Copy the unified Python MCP server (replaces old bash tools)
+          cp -r ./agy-defaults/mcp-server "$HOME/.local/mcp-server"
 
           pip install mcp > /dev/null 2>&1 &
           MCP_PID=$!
-          cp -r ./agy-defaults/bin/vcs "$HOME/.local/bin/vcs"
-          cp ./agy-defaults/bin/agy_mcp_server.py "$HOME/.local/bin/agy_mcp_server.py"
-          chmod +x "$HOME/.local/bin/agy_mcp_server.py"
           
           # Run the hex patcher to optimize the binary natively
-          cp ./agy-defaults/bin/agy-patcher.py "$HOME/.local/bin/agy-patcher.py"
+          cp ./agy-defaults/agy-patcher.py "$HOME/.local/bin/agy-patcher.py"
           wait $AGY_PID
           if [ "${{ steps.cache-agy.outputs.cache-hit }}" != "true" ]; then
             python3 "$HOME/.local/bin/agy-patcher.py" "$HOME/.local/bin/agy"
