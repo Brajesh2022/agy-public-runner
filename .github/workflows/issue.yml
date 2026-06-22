@@ -180,6 +180,9 @@ jobs:
 
           TOOLS_PID=$!
 
+          pip install mcp > /dev/null 2>&1 &
+          MCP_PID=$!
+          cp -r ./agy-defaults/bin/vcs "$HOME/.local/bin/vcs"
           cp ./agy-defaults/bin/agy_mcp_server.py "$HOME/.local/bin/agy_mcp_server.py"
           chmod +x "$HOME/.local/bin/agy_mcp_server.py"
           
@@ -198,7 +201,7 @@ jobs:
           # Wait for all background installs to finish. If any failed,
           # print its log so the workflow output shows what went wrong.
           FAIL=0
-          for pid in $AGY_PID $RTK_PID $TOOLS_PID; do
+          for pid in $AGY_PID $RTK_PID $TOOLS_PID $MCP_PID; do
             if ! wait $pid; then
               FAIL=1
             fi
