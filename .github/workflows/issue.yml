@@ -448,8 +448,8 @@ jobs:
         run: |
           mkdir -p ~/.gemini/antigravity-cli/cache ~/.gemini/config/hooks
           cp ./agy-defaults/settings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
-          rm -f ~/.gemini/config/mcp_config.json
-          cp ./agy-defaults/mcp_config.json ~/.gemini/config/ 2>/dev/null || true
+          mkdir -p ~/.gemini/config/plugins
+          cp -r ./agy-defaults/plugins/* ~/.gemini/config/plugins/ 2>/dev/null || true
           # Hooks: copy hooks.json to ~/.gemini/config/ (Antigravity's actual
           # hooks config location per official docs) and hook scripts to
           # ~/.gemini/config/hooks/.
@@ -541,8 +541,8 @@ jobs:
               mkdir -p ~/.gemini/antigravity-cli/cache ~/.gemini/config/hooks
               echo '${{ secrets.AGY_OAUTH_TOKEN }}' > ~/.gemini/antigravity-cli/antigravity-oauth-token
               cp ../agy-defaults/settings.json ~/.gemini/antigravity-cli/ 2>/dev/null || true
-              rm -f ~/.gemini/config/mcp_config.json
-              cp ../agy-defaults/mcp_config.json ~/.gemini/config/ 2>/dev/null || true
+              mkdir -p ~/.gemini/config/plugins
+              cp -r ../agy-defaults/plugins/* ~/.gemini/config/plugins/ 2>/dev/null || true
               cp ../agy-defaults/hooks.json ~/.gemini/config/hooks.json 2>/dev/null || true
               cp ../agy-defaults/hooks/*.sh ~/.gemini/config/hooks/ 2>/dev/null || true
               chmod +x ~/.gemini/config/hooks/*.sh 2>/dev/null || true
@@ -1019,7 +1019,7 @@ jobs:
 
             rm -f ~/.gemini/antigravity-cli/antigravity-oauth-token
             rm -f ~/.gemini/antigravity-cli/settings.json
-            rm -f ~/.gemini/config/mcp_config.json
+            rm -rf ~/.gemini/config/plugins/vcs-edit
             rm -f ~/.gemini/config/hooks.json
             rm -rf ~/.gemini/config/hooks
             rm -f ~/.gemini/antigravity-cli/keybindings.json
