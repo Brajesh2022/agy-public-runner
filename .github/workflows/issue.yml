@@ -167,12 +167,7 @@ jobs:
           ( curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh 2>"$LOG_DIR/rtk.err" | sh ) &
           RTK_PID=$!
 
-          # 3. Copy the unified Python MCP server (replaces old bash tools)
-          cp -r ./agy-defaults/mcp-server "$HOME/.local/mcp-server"
 
-          pip install mcp > /dev/null 2>&1 &
-          MCP_PID=$!
-          
           # Run the hex patcher to optimize the binary natively
           cp ./agy-defaults/agy-patcher.py "$HOME/.local/bin/agy-patcher.py"
           wait $AGY_PID
@@ -188,7 +183,7 @@ jobs:
           # Wait for all background installs to finish. If any failed,
           # print its log so the workflow output shows what went wrong.
           FAIL=0
-          for pid in $AGY_PID $RTK_PID $TOOLS_PID $MCP_PID; do
+          for pid in $AGY_PID $RTK_PID $TOOLS_PID; do
             if ! wait $pid; then
               FAIL=1
             fi
