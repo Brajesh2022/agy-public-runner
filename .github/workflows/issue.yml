@@ -205,6 +205,11 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
           echo "/opt/pipx_bin" >> $GITHUB_PATH
 
+      - name: Install VCS CLI
+        run: |
+          chmod +x ./agy-defaults/mcp-server/vcs
+          ln -sf $GITHUB_WORKSPACE/agy-defaults/mcp-server/vcs $HOME/.local/bin/vcs
+
       - name: Setup Custom Commands
         env:
           GH_TOKEN: ${{ github.event.client_payload.gh_token || secrets.GH_TOKEN || secrets.PAT || secrets.GITHUB_TOKEN }}
