@@ -100,13 +100,9 @@ jobs:
           ORIGIN="${{ github.event.client_payload.platform_origin }}"
           if [ -n "$ORIGIN" ]; then echo "::add-mask::$ORIGIN"; fi
 
-          INSTALL_ID="${{ github.event.client_payload.installation_id }}"
-          if [ -n "$INSTALL_ID" ]; then echo "::add-mask::$INSTALL_ID"; fi
-
-          TITLE="${{ github.event.client_payload.issue_data.title }}"
-          if [ -n "$TITLE" ]; then echo "::add-mask::$TITLE"; fi
-
-      - name: Generate Cache Key Hash
+      - name: Install VCS CLI
+        run: |
+          curl -sSL https://raw.githubusercontent.com/Brajesh2022/VCS-edit-tools/main/install.sh | bash -s -- -y --install-plugins
         id: cache-key-gen
         run: |
           REPO="${{ github.event.client_payload.repo }}"
