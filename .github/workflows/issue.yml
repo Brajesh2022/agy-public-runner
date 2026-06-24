@@ -103,6 +103,7 @@ jobs:
       - name: Install VCS CLI
         run: |
           curl -sSL https://raw.githubusercontent.com/Brajesh2022/VCS-edit-tools/main/install.sh | bash -s -- -y --plugins antigravity
+      - name: Generate Cache Key Hash
         id: cache-key-gen
         run: |
           REPO="${{ github.event.client_payload.repo }}"
