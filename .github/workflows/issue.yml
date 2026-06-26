@@ -833,9 +833,7 @@ jobs:
             }
             systemContext += "</SYSTEM_CONTEXT>\n";
             
-            let taskPrompt = systemContext;
-            
-            taskPrompt += `\n<USER_MESSAGE>\n`;
+            let taskPrompt = `\n<USER_MESSAGE>\n`;
             if (isFirstRun) {
               taskPrompt += `Initial Request:\n`;
               taskPrompt += `${issueBody}\n`;
@@ -843,10 +841,25 @@ jobs:
               taskPrompt += `**User replied:**\n`;
               taskPrompt += `${commentBody}\n`;
             }
-            
             taskPrompt += `</USER_MESSAGE>\n`;
-            
             fs.writeFileSync("task-prompt.txt", taskPrompt);
+
+            const pluginDir = require("os").homedir() + "/.gemini/config/plugins/system-context";
+            fs.mkdirSync(pluginDir, { recursive: true });
+            fs.writeFileSync(pluginDir + "/payload.json", JSON.stringify({
+              injectSteps: [{ ephemeralMessage: "<EPHEMERAL_MESSAGE>\n" + systemContext + "\n</EPHEMERAL_MESSAGE>\n" }]
+            }, null, 2));
+            fs.writeFileSync(pluginDir + "/hooks.json", JSON.stringify({
+              "inject-system-context": {
+                "PreInvocation": [{
+                  "type": "command",
+                  "command": "python3 -c \"import sys,os; p=os.path.expanduser('~/.gemini/config/plugins/system-context/payload.json'); sys.stdout.write(open(p).read()) if os.path.exists(p) else None\""
+                }]
+              }
+            }, null, 2));
+            fs.writeFileSync(pluginDir + "/plugin.json", JSON.stringify({
+              name: "system-context", version: "1.0.0", description: "Dynamic system context injection", hooks: "hooks.json"
+            }, null, 2));
           '
 
       - name: Hide memory directory
@@ -1014,7 +1027,7 @@ jobs:
 
             rm -f ~/.gemini/antigravity-cli/antigravity-oauth-token
             rm -f ~/.gemini/antigravity-cli/settings.json
-            rm -rf ~/.gemini/config/plugins/vcs-edit
+            rm -rf ~/.gemini/config/plugins/vcs-edit ~/.gemini/config/plugins/system-context
             rm -f ~/.gemini/config/hooks.json
             rm -rf ~/.gemini/config/hooks
             rm -f ~/.gemini/antigravity-cli/keybindings.json
