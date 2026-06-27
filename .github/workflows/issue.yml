@@ -785,27 +785,24 @@ jobs:
             let systemContext = "<SYSTEM_CONTEXT>\n";
             
             if (memoryExists && !workspaceCacheHit) {
-              systemContext += "⚠️ WARNING: Your persistent ~/Agent-Workspace was automatically deleted because it exceeded the 7-day inactivity limit. Any files, custom scripts, or cloned repositories you previously saved there are gone.\n\n";
+              systemContext += "⚠️ Workspace wiped (7-day inactivity limit).\n\n";
             }
             
-            systemContext += `- The target repository (${targetRepo}), Branch (${targetBranch}) is already cloned in /tmp/target-repo.\n`;
+            systemContext += `- Repo: ${targetRepo} | Branch: ${targetBranch} | Cloned at: /tmp/target-repo\n`;
             
             if (prMerged) {
-              systemContext += `- 🟢 Note: Your previously made PR (${existingPrUrl}) is already **MERGED**.\n`;
-              systemContext += `  The system suggests that it would be better to create a new PR after making further commits. Please use the \\\`PR <pr_url> <branch>\\\` command again once you create a new PR.\n`;
+              systemContext += `- 🟢 PR Merged: ${existingPrUrl}. Create a new PR for new commits (use \\\`PR <pr_url> <branch>\\\`).\n`;
               if (prBranchExists) {
-                systemContext += `  - Note: The PR was merged but the branch was not deleted. There is no need to create a new branch—the existing PR branch still exists—so you can open a new PR using the same branch and commit to that branch.\n`;
+                systemContext += `  - Branch retained. You can commit to it & open a new PR.\n`;
               }
             }
             
             if (prBranchExists) {
-              systemContext += `  *(Note: This branch is an active PR branch you created earlier.)*\n`;
-              systemContext += `  - A unified diff of all changes made in this PR so far is available at: /tmp/target-repo/pr_diff.diff\n`;
+              systemContext += `  *(Active PR branch)* Diff: /tmp/target-repo/pr_diff.diff\n`;
             } else if (prBranchDeleted && prMerged) {
-              systemContext += `  - The ${existingPrBranch} branch got deleted after being merged, so the system cloned the ${targetBranch} branch in /tmp/target-repo.\n`;
-              systemContext += `  - {No diff available as PR is merged and branch no longer exists}\n`;
+              systemContext += `  - Merged PR branch (${existingPrBranch}) deleted. Cloned ${targetBranch} instead (No diff).\n`;
             } else if (prBranchDeleted) {
-              systemContext += `  - ⚠️ The ${existingPrBranch} branch got deleted, so the system cloned the ${targetBranch} branch in /tmp/target-repo instead.\n`;
+              systemContext += `  - ⚠️ PR branch (${existingPrBranch}) deleted. Cloned ${targetBranch} instead.\n`;
             }
             
             if (attachmentsStr && attachmentsStr.trim() !== "") {
@@ -817,19 +814,19 @@ jobs:
               skillsStr.split(",").forEach(s => {
                 const name = s.trim();
                 if (name) {
-                  systemContext += `  - Agent skill: '${name}' (already installed, its SKILL.md is at file:///home/runner/.gemini/antigravity-cli/skills/${name}/SKILL.md)\n`;
+                  systemContext += `  - '${name}' (file:///home/runner/.gemini/antigravity-cli/skills/${name}/SKILL.md)\n`;
                 }
               });
             }
             
             if (memoryExists) {
               if (newCommits) {
-                systemContext += `- New commits were pushed to ${targetBranch} since your last run.\n`;
+                systemContext += `- New commits pushed since last run.\n`;
               } else {
-                 systemContext += `- No new commits were pushed since your last run. If you have already copied the repo to your Workspace, there is no need to copy it again. There is no need to read the entire code base or verify it again, as the code is exactly the same. The tmp folder is only created so that, if your agent’s workspace loses, you can copy it. Since there are no new commits, using the tmp folder is unnecessary if your agent-workspace persisted.\n`;
+                 systemContext += `- No new commits. If workspace persisted, no need to re-copy or re-verify from /tmp/target-repo.\n`;
               }
             } else {
-              systemContext += `- You are operating in an ephemeral GitHub Action. Any files you create outside of ~/Agent-Workspace will be lost.\n`;
+              systemContext += `- Ephemeral action: Files outside ~/Agent-Workspace will be lost.\n`;
             }
             systemContext += "</SYSTEM_CONTEXT>\n";
             
