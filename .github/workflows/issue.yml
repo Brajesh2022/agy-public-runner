@@ -942,9 +942,9 @@ jobs:
           export AGY_RESTART_COUNT=0
           while [ $AGY_RESTART_COUNT -lt 5 ]; do
             if [ "$MEMORY_EXISTS" = "true" ] && [ -n "$AGY_CONVERSATION_ID" ]; then
-              cat /tmp/task.txt | agy --print-timeout 360m --conversation "$AGY_CONVERSATION_ID" "${MODEL_ARGS[@]}"
+              cat /tmp/task.txt | agy --print-timeout 360m --dangerously-skip-permissions --conversation "$AGY_CONVERSATION_ID" "${MODEL_ARGS[@]}"
             else
-              cat /tmp/task.txt | agy --print-timeout 360m "${MODEL_ARGS[@]}"
+              cat /tmp/task.txt | agy --print-timeout 360m --dangerously-skip-permissions "${MODEL_ARGS[@]}"
             fi
             
             NEW_ID=$(ls -t ~/.gemini/antigravity-cli/conversations/*.db 2>/dev/null | head -n 1 | xargs -r basename -s .db || true)
