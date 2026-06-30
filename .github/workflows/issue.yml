@@ -604,6 +604,7 @@ jobs:
               }
 
               if (commentBody) {
+                skillsJson = "";
                 const commentJsonMatch = commentBody.match(/```json\n([\s\S]*?)\n```/);
                 if (commentJsonMatch) {
                   try {
