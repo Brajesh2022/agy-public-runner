@@ -200,10 +200,7 @@ jobs:
 
           # Disable RTK truncation for all vcs commands
           mkdir -p "$HOME/.config/rtk"
-          cat <<RTK_EOF > "$HOME/.config/rtk/config.toml"
-[hooks]
-exclude_commands = ["vcs"]
-RTK_EOF
+          printf '%s\n' '[hooks]' 'exclude_commands = ["vcs"]' > "$HOME/.config/rtk/config.toml"
 
       - name: Add agy to PATH
         run: |
