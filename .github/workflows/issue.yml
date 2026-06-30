@@ -198,6 +198,13 @@ jobs:
             exit 1
           fi
 
+          # Disable RTK truncation for all vcs commands
+          mkdir -p "$HOME/.config/rtk"
+          cat <<RTK_EOF > "$HOME/.config/rtk/config.toml"
+[hooks]
+exclude_commands = ["vcs"]
+RTK_EOF
+
       - name: Add agy to PATH
         run: |
           echo "$HOME/.local/bin" >> $GITHUB_PATH
