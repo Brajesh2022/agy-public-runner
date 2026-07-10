@@ -803,10 +803,6 @@ jobs:
               systemContext += `  - ⚠️ PR branch (${existingPrBranch}) deleted. Cloned ${targetBranch} instead.\n`;
             }
             
-            if (attachmentsStr && attachmentsStr.trim() !== "") {
-              systemContext += `- The user has attached these files: ${attachmentsStr}. They are stored in the ~/Agent-Workspace/attachments/ directory.\n`;
-            }
-            
             if (skillsStr && skillsStr.trim() !== "") {
               systemContext += `- The user wants you to use the following skills for this task:\n`;
               skillsStr.split(",").forEach(s => {
@@ -828,7 +824,10 @@ jobs:
             }
             systemContext += "</SYSTEM_CONTEXT>\n";
             
-            let taskPrompt = `\n<USER_MESSAGE>\n`;
+            let taskPrompt = ``;
+            if (attachmentsStr && attachmentsStr.trim() !== "") {
+              taskPrompt += `<attachment>The user has attached these files: ${attachmentsStr}. They are stored in the ~/Agent-Workspace/attachments/ directory.</attachment>\n`;
+            }
             if (isFirstRun) {
               taskPrompt += `Initial Request:\n`;
               taskPrompt += `${issueBody}\n`;
@@ -836,7 +835,6 @@ jobs:
               taskPrompt += `**User replied:**\n`;
               taskPrompt += `${commentBody}\n`;
             }
-            taskPrompt += `</USER_MESSAGE>\n`;
             fs.writeFileSync("task-prompt.txt", taskPrompt);
 
             const pluginDir = require("os").homedir() + "/.gemini/config/plugins/system-context";
